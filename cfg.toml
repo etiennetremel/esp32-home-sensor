@@ -1,0 +1,10 @@
+[esp32_home_sensor]
+wifi_ssid = "my-wifi"
+wifi_psk = "wifi-password"
+hostname = "esp32-outdoor"
+mqtt_hostname = "homie.local"
+mqtt_port = 1883
+mqtt_username = "esp32-outdoor"
+mqtt_password = "someranddompassword"
+mqtt_topic = "sensors"
+location = "outdoor"

@@ -1,0 +1,78 @@
+services:
+  influxdb:
+    image: influxdb:2.5.1
+    restart: always
+    ports:
+      - "8086:8086"
+    env_file: ./infra/influxdb.env
+    networks:
+      - db
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8086/health"]
+      interval: 10s
+      start_period: 10s
+    volumes:
+      - db-data:/var/lib/influxdb2
+
+  # generate Telegraf user in InfluxDB
+  telegraf-credentials:
+    image: influxdb:2.5.1
+    command: /scripts/telegraf-init.sh
+    env_file: ./infra/influxdb.env
+    working_dir: /scripts
+    networks:
+      - db
+    volumes:
+      - ./infra/telegraf.env:/scripts/telegraf.env
+      - ./infra/telegraf-init.sh:/scripts/telegraf-init.sh:ro
+    depends_on:
+      influxdb:
+        condition: service_healthy
+
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    restart: always
+    networks:
+      - mqtt
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        cp /etc/mosquitto/mqtt.auth /etc/mosquitto/password_file &&
+        mosquitto_passwd -U /etc/mosquitto/password_file &&
+        /docker-entrypoint.sh /usr/sbin/mosquitto -c /mosquitto/config/mosquitto.conf
+
+    volumes:
+      - mqtt-data:/mosquitto/data
+      - mqtt-logs:/mosquitto/log
+      - ./infra/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - ./infra/mqtt.auth:/etc/mosquitto/mqtt.auth:ro
+
+  telegraf:
+    image: telegraf:1.24-alpine
+    restart: always
+    env_file: ./infra/telegraf.env
+    networks:
+      - db
+      - mqtt
+    depends_on:
+      telegraf-credentials:
+        condition: service_completed_successfully
+      influxdb:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+    volumes:
+      - ./infra/telegraf-config.toml:/etc/telegraf/telegraf.conf
+
+volumes:
+  db-data:
+  mqtt-data:
+  mqtt-logs:
+
+networks:
+  db:
+  mqtt:

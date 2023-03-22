@@ -1,0 +1,16 @@
+[[inputs.mqtt_consumer]]
+  servers = ["tcp://mosquitto:1883"]
+  topics = [
+    "telegraf/host01/cpu",
+    "telegraf/+/mem",
+    "sensors/#",
+  ]
+  username = "$TELEGRAF_MQTT_USERNAME"
+  password = "$TELEGRAF_MQTT_PASSWORD"
+  data_format = "influx"
+
+ [[outputs.influxdb_v2]]
+  urls = ["http://influxdb:8086"]
+  token = "$INFLUX_TOKEN"
+  organization = "home"
+  bucket = "weather"
