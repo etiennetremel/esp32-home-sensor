@@ -225,8 +225,8 @@ async fn measure(stack: &'static Stack<WifiDevice>, mut sensor: Sensor) {
             rust_mqtt::client::client_config::MqttVersion::MQTTv5,
             CountingRng(20000),
         );
-        mqtt_config.add_username(CONFIG.mqtt_username.into());
-        mqtt_config.add_password(CONFIG.mqtt_password.into());
+        mqtt_config.add_username(CONFIG.mqtt_username);
+        mqtt_config.add_password(CONFIG.mqtt_password);
 
         let mut client = MqttClient::<_, 5, _>::new(
             socket,
@@ -260,7 +260,7 @@ async fn measure(stack: &'static Stack<WifiDevice>, mut sensor: Sensor) {
                     println!("Publishing: {:?}", data);
                     client
                         .send_message(
-                            CONFIG.mqtt_topic.into(),
+                            CONFIG.mqtt_topic,
                             data.as_bytes(),
                             QualityOfService::QoS0,
                             false,

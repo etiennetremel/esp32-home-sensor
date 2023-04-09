@@ -40,7 +40,7 @@ impl Sensor {
                     .with_sensor_mode(SensorMode::Normal),
             )
             .unwrap();
-        Sensor { bme280: bme280 }
+        Sensor { bme280 }
     }
 
     pub fn measure(&mut self) -> Result<Measurement, Error> {
@@ -51,6 +51,6 @@ impl Sensor {
                 pressure,
             });
         }
-        return Err(Error::Bme280Measurement);
+        Err(Error::Bme280Measurement)
     }
 }
