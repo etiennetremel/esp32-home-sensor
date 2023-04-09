@@ -7,6 +7,26 @@ ESP-32 home sensor
 > [Telegraf](https://www.influxdata.com/time-series-platform/telegraf/) and
 > persisted into [InfluxDB](https://www.influxdata.com).
 
+## Overview
+
+```mermaid
+flowchart LR
+    A(fa:fa-microchip ESP32<br /><small><i>outdoor front</i></small>)
+    B(fa:fa-microchip ESP32<br /><small><i>indoor living room</i></small>)
+    C(fa:fa-microchip ESP32<br /><small><i>indoor bedroom</i></small>)
+    D(fa:fa-tower-broadcast Mosquitto MQTT)
+    E(fa:fa-gear Telegraf)
+    F(fa:fa-database InfluxDB)
+    G(fa:fa-chart-line Dashboards)
+
+    A-->D
+    B-->D
+    C-->D
+    D-->E
+    E-->F
+    F-->G
+```
+
 ## Getting started
 
 ### ESP32
