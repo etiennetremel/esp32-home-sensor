@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# This scripe is used to generate the telegraf.env file and does the following:
+# This script is used to generate the telegraf.env file and does the following:
 # - create a Telegraf user with a random password in InfluxDB
-# - pulls the MQTT password from the mqtt.auth file and store it as
-# TELEGRAF_MQTT_PASSWORD
+# - generate one or pull existing telegraf MQTT password from the mqtt.auth
+#   file and store it as TELEGRAF_MQTT_PASSWORD
 # - generate an INFLUX_TOKEN for Telegraf to use to write to InfluxDB
 
 set -e
 
 INFLUXDB_TELEGRAF_USERNAME=telegraf
 INFLUXDB_TELEGRAF_PASSWORD=$(openssl rand -base64 24)
-MQTT_TELEGRAF_USERNAME=telegraf
+TELEGRAF_USERNAME=telegraf
+TELEGRAF_PASSWORD=$(openssl rand -base64 24)
 
 if [ ! -f telegraf.env ]
 then
@@ -20,14 +21,20 @@ fi
 if ! grep -q TELEGRAF_MQTT_USERNAME ./telegraf.env
 then
   echo "Adding TELEGRAF_MQTT_USERNAME to telegraf.env"
-  echo "TELEGRAF_MQTT_USERNAME=$MQTT_TELEGRAF_USERNAME" >> ./telegraf.env
+  echo "TELEGRAF_MQTT_USERNAME=$TELEGRAF_USERNAME" >> ./telegraf.env
 fi
 
 if ! grep -q TELEGRAF_MQTT_PASSWORD ./telegraf.env
 then
   echo "Adding TELEGRAF_MQTT_PASSWORD to telegraf.env"
-  mqtt_password=$(awk -F':' -v "username=$MQTT_TELEGRAF_USERNAME" '$1 == username {print $2}')
-  echo "TELEGRAF_MQTT_PASSWORD=${mqtt_password}" >> ./telegraf.env
+  if ! grep -q "^$TELEGRAF_USERNAME:" ./mqtt.auth
+  then
+    echo "Telegraf user not found in mqtt.auth, generating it"
+    echo "$TELEGRAF_USERNAME:$TELEGRAF_PASSWORD" >> ./mqtt.auth
+  else
+    TELEGRAF_PASSWORD=$(awk -F':' -v "username=$TELEGRAF_USERNAME" '$1 == username {print $2}' ./mqtt.auth)
+  fi
+  echo "TELEGRAF_MQTT_PASSWORD=$TELEGRAF_PASSWORD" >> ./telegraf.env
 fi
 
 if ! grep -q INFLUX_TOKEN ./telegraf.env

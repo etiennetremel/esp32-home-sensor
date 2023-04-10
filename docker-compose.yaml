@@ -23,6 +23,7 @@ services:
     networks:
       - db
     volumes:
+      - ./infra/mqtt.auth:/scripts/mqtt.auth
       - ./infra/telegraf.env:/scripts/telegraf.env
       - ./infra/telegraf-init.sh:/scripts/telegraf-init.sh:ro
     depends_on:
@@ -44,11 +45,13 @@ services:
         cp /etc/mosquitto/mqtt.auth /etc/mosquitto/password_file &&
         mosquitto_passwd -U /etc/mosquitto/password_file &&
         /docker-entrypoint.sh /usr/sbin/mosquitto -c /mosquitto/config/mosquitto.conf
-
+    depends_on:
+      telegraf-credentials:
+        condition: service_completed_successfully
     volumes:
       - mqtt-data:/mosquitto/data
       - mqtt-logs:/mosquitto/log
-      - ./infra/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - ./infra/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - ./infra/mqtt.auth:/etc/mosquitto/mqtt.auth:ro
 
   telegraf:
@@ -66,7 +69,7 @@ services:
       mosquitto:
         condition: service_started
     volumes:
-      - ./infra/telegraf-config.toml:/etc/telegraf/telegraf.conf
+      - ./infra/telegraf-config.toml:/etc/telegraf/telegraf.conf:ro
 
 volumes:
   db-data:
