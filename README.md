@@ -64,13 +64,23 @@ mqtt_topic = "sensors"
 location = "outdoor"
 ```
 
+#### Development
+
+Connect the device via USB, then run the following command to run flash and
+retrieve logs from the device using espmonitor:
+
+```bash
+. $HOME/export-esp.sh
+cargo run
+```
+
 #### Flashing
 
 Connect the device via USB, then flash it with the following command:
 
 ```bash
 . $HOME/export-esp.sh
-cargo run --release
+cargo espflash --release
 ```
 
 ### Setup infrastructure using Docker
@@ -91,4 +101,4 @@ esp32-outdoor:a19sn#sA94k!a5o10
 esp32-indoor:a93KifAoBf7#01-jl
 ```
 
-After what, run `docker-compose up -d` to deploy the infrastructure.
+After what, run `docker compose up -d` to deploy the infrastructure.
