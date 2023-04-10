@@ -74,7 +74,6 @@ static EXECUTOR: StaticCell<Executor> = StaticCell::new();
 #[entry]
 fn main() -> ! {
     init_logger(log::LevelFilter::Info);
-    esp_wifi::init_heap();
 
     let peripherals = Peripherals::take();
     let mut system = peripherals.DPORT.split();
@@ -94,10 +93,17 @@ fn main() -> ! {
 
     {
         let timg1 = TimerGroup::new(peripherals.TIMG1, &clocks);
-        initialize(timg1.timer0, Rng::new(peripherals.RNG), &clocks).unwrap();
+        initialize(
+            timg1.timer0,
+            Rng::new(peripherals.RNG),
+            system.radio_clock_control,
+            &clocks,
+        )
+        .unwrap();
     }
 
-    let (wifi_interface, controller) = esp_wifi::wifi::new(WifiMode::Sta);
+    let (wifi, _) = peripherals.RADIO.split();
+    let (wifi_interface, controller) = esp_wifi::wifi::new_with_mode(wifi, WifiMode::Sta);
 
     embassy::init(&clocks, timg0.timer0);
 
@@ -130,23 +136,25 @@ fn main() -> ! {
         let executor = EXECUTOR.init(Executor::new());
         executor.run(|spawner| {
             spawner.spawn(connection(controller)).ok();
-            spawner.spawn(net_task(stack)).ok();
-            spawner.spawn(measure(stack, sensor)).ok();
+            spawner.spawn(net_task(&stack)).ok();
+            spawner.spawn(measure(&stack, sensor)).ok();
         });
     }
 }
 
 #[embassy_executor::task]
-async fn connection(mut controller: WifiController) {
+async fn connection(mut controller: WifiController<'static>) {
     println!("Start connection task");
     println!("Device capabilities: {:?}", controller.get_capabilities());
     loop {
-        if let WifiState::StaConnected = esp_wifi::wifi::get_wifi_state() {
-            // wait until we're no longer connected
-            controller.wait_for_event(WifiEvent::StaDisconnected).await;
-            Timer::after(Duration::from_millis(5000)).await
+        match esp_wifi::wifi::get_wifi_state() {
+            WifiState::StaConnected => {
+                // wait until we're no longer connected
+                controller.wait_for_event(WifiEvent::StaDisconnected).await;
+                Timer::after(Duration::from_millis(5000)).await
+            }
+            _ => {}
         }
-
         if !matches!(controller.is_started(), Ok(true)) {
             let client_config = Configuration::Client(ClientConfiguration {
                 ssid: CONFIG.wifi_ssid.into(),
@@ -161,24 +169,22 @@ async fn connection(mut controller: WifiController) {
         println!("About to connect to {:?}...", CONFIG.wifi_ssid);
 
         match controller.connect().await {
-            Ok(_) => {
-                println!("Wifi connected!");
-            }
+            Ok(_) => println!("Wifi connected!"),
             Err(e) => {
                 println!("Failed to connect to wifi: {e:?}");
-                Timer::after(Duration::from_millis(5000)).await;
+                Timer::after(Duration::from_millis(5000)).await
             }
         }
     }
 }
 
 #[embassy_executor::task]
-async fn net_task(stack: &'static Stack<WifiDevice>) {
+async fn net_task(stack: &'static Stack<WifiDevice<'static>>) {
     stack.run().await
 }
 
 #[embassy_executor::task]
-async fn measure(stack: &'static Stack<WifiDevice>, mut sensor: Sensor) {
+async fn measure(stack: &'static Stack<WifiDevice<'static>>, mut sensor: Sensor) {
     let mut rx_buffer = [0; 4096];
     let mut tx_buffer = [0; 4096];
 
@@ -242,7 +248,7 @@ async fn measure(stack: &'static Stack<WifiDevice>, mut sensor: Sensor) {
             match sensor.measure() {
                 Ok(measurement) => {
                     println!(
-                        "Measured {:.2}°C, {:.2}% RH, {:.2}hPa",
+                        "Measured {:.2}C, {:.2}% RH, {:.2}hPa",
                         measurement.temperature, measurement.humidity, measurement.pressure
                     );
 
