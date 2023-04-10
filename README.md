@@ -102,3 +102,8 @@ esp32-indoor:a93KifAoBf7#01-jl
 ```
 
 After what, run `docker compose up -d` to deploy the infrastructure.
+
+You can visualise the metrics by importing `./infra/influx-dashboard.json` as
+dashboard into InfluxDB.
+
+![InfluxDB dashboard](./dashboard.png)
