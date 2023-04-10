@@ -203,10 +203,10 @@ async fn measure(stack: &'static Stack<WifiDevice>, mut sensor: Sensor) {
 
         let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
 
-        socket.set_timeout(Some(embassy_net::SmolDuration::from_secs(10)));
+        socket.set_timeout(Some(embassy_net::SmolDuration::from_secs(60)));
 
         // TODO: parse IP from config
-        let ip_addr = Ipv4Address::new(192, 168, 94, 13);
+        let ip_addr = Ipv4Address::new(192, 168, 94, 27);
 
         let socket_addr = (ip_addr, CONFIG.mqtt_port);
 
