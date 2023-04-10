@@ -248,7 +248,7 @@ async fn measure(stack: &'static Stack<WifiDevice<'static>>, mut sensor: Sensor)
             match sensor.measure() {
                 Ok(measurement) => {
                     println!(
-                        "Measured {:.2}C, {:.2}% RH, {:.2}hPa",
+                        "Measured {:.2} C, {:.2} % RH, {:.2} Pa",
                         measurement.temperature, measurement.humidity, measurement.pressure
                     );
 
