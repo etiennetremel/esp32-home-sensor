@@ -86,6 +86,7 @@ cargo espflash --release
 ### Setup infrastructure using Docker
 
 Docker compose is used to setup the infrastructure. It is composed of 4 services:
+
 - InfluxDB - persistent storage and basic dash-boarding
 - Mosquitto - MQTT broker
 - Telegraf - consume MQTT messages and store them in the database
@@ -93,8 +94,7 @@ Docker compose is used to setup the infrastructure. It is composed of 4 services
 
 First, review/adjust environment variables in `./infra/influxdb.env`. Then, for
 each device (one per line) define a username/password in `./infra/mqtt.auth`
-file.
-For example:
+file. For example:
 
 ```yaml
 esp32-outdoor:a19sn#sA94k!a5o10
@@ -103,7 +103,7 @@ esp32-indoor:a93KifAoBf7#01-jl
 
 After what, run `docker compose up -d` to deploy the infrastructure.
 
-You can visualise the metrics by importing `./infra/influx-dashboard.json` as
+You can visualise metrics by importing `./infra/influx-dashboard.json` as
 dashboard into InfluxDB.
 
 ![InfluxDB dashboard](./dashboard.png)
