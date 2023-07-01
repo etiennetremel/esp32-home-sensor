@@ -70,6 +70,8 @@ Connect the device via USB, then run the following command to run flash and
 retrieve logs from the device using espmonitor:
 
 ```bash
+espup update
+
 . $HOME/export-esp.sh
 cargo run
 ```
@@ -80,7 +82,7 @@ Connect the device via USB, then flash it with the following command:
 
 ```bash
 . $HOME/export-esp.sh
-cargo espflash --release
+cargo espflash flash --release
 ```
 
 ### Setup infrastructure using Docker

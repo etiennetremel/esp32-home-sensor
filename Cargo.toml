@@ -7,25 +7,25 @@ license = "MIT"
 
 [dependencies]
 bme280-rs = "0.1.0"
-defmt =  "0.3.2"
+defmt =  "0.3.4"
 
-embassy-executor  = { package = "embassy-executor", git = "https://github.com/embassy-rs/embassy/", rev = "cd9a65b", features = ["nightly", "integrated-timers"] }
+embassy-executor = { version = "0.2.0", package = "embassy-executor", features = ["nightly", "executor-thread", "integrated-timers", "arch-xtensa"] }
 embassy-futures = "0.1.0"
-embassy-net = { git = "https://github.com/embassy-rs/embassy", rev = "26474ce6eb759e5add1c137f3417845e0797df3a", features = ["nightly", "tcp", "udp", "dhcpv4", "medium-ethernet"] }
-embassy-net-driver = { git = "https://github.com/embassy-rs/embassy", rev = "26474ce6eb759e5add1c137f3417845e0797df3a", optional = true }
-embassy-sync = "0.1.0"
-embassy-time = { version = "0.1.0", features = ["nightly"] }
+embassy-net = { git = "https://github.com/embassy-rs/embassy", rev = "fb27594", features = ["nightly", "tcp", "udp", "dhcpv4", "medium-ethernet"] }
+embassy-net-driver = { git = "https://github.com/embassy-rs/embassy", rev = "fb27594" }
+embassy-sync = "0.2.0"
+embassy-time = { version = "0.1.1", features = ["nightly"] }
 
-embedded-hal = "0.2.3"
+embedded-hal = "0.2.7"
 embedded-io = "0.4.0"
-embedded-svc = { version = "0.23.1", default-features = false, features = []}
+embedded-svc = { version = "0.25.0", default-features = false, features = []}
 
-esp-backtrace = { version = "0.5.0", features = ["esp32", "panic-handler", "print-uart"] }
-esp-println = { version = "0.4.0", features = [ "esp32", "log" ] }
-esp32-hal = { version = "0.11.0",  features = [ "rt" ] }
+esp-backtrace = { version = "0.7.0", features = ["esp32", "panic-handler", "print-uart"] }
+esp-println = { version = "0.5.0", features = [ "esp32", "log" ] }
+esp32-hal = { version = "0.12.0",  features = [ "rt", "embassy-time-timg0" ] }
 
-futures-util = { version = "0.3.17", default-features = false }
-heapless = { version = "0.7.14", default-features = false }
+futures-util = { version = "0.3.28", default-features = false }
+heapless = { version = "0.7.16", default-features = false }
 log = "0.4.17"
 rust-mqtt = { version = "0.1.5", default-features = false, features = []}
 shared-bus = "0.2.5"
@@ -34,24 +34,24 @@ toml-cfg = "0.1.3"
 
 [dependencies.esp-wifi]
 git = "https://github.com/esp-rs/esp-wifi.git"
-rev = "f79819d"
+rev = "c792679"
 default-features = false
 features = [
   "async",
   "embassy-net",
   "embedded-svc",
   "esp32",
-  "esp32-async",
-  "wifi"
+  "async",
+  "wifi",
+  "mtu-1492"
 ]
 
 [profile.release]
-opt-level = "s"   # optimize for size
-codegen-units = 1 # better optimizations
-debug = false
-lto = false
+opt-level = 3
+# Explicitly disable LTO which the Xtensa codegen backend has issues
+lto = "off"
 
 [profile.dev]
 debug = true
 opt-level = 3
-lto = false
+lto = "off"
