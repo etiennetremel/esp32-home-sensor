@@ -105,6 +105,9 @@ esp32-indoor:a93KifAoBf7#01-jl
 
 After what, run `docker compose up -d` to deploy the infrastructure.
 
+Note, you might have to restart all containers to get the environment variables
+re-populated into the container after being generated during initial boot.
+
 You can visualise metrics by importing `./infra/influx-dashboard.json` as
 dashboard into InfluxDB.
 
