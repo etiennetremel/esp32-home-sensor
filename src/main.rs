@@ -5,12 +5,12 @@
 
 use core::fmt::Write;
 use heapless::String;
-
 use static_cell::make_static;
 
 use embassy_executor::Spawner;
+use embassy_net::dns::DnsQueryType;
 use embassy_net::tcp::TcpSocket;
-use embassy_net::{Ipv4Address, Stack, StackResources};
+use embassy_net::{Stack, StackResources};
 use embassy_time::{Duration, Timer};
 
 use esp_backtrace as _;
@@ -49,6 +49,7 @@ pub struct Config {
     wifi_ssid: &'static str,
     #[default("")]
     wifi_psk: &'static str,
+    // smoltcp currently doesn't have a way of giving a hostname through DHCP
     #[default("esp32")]
     hostname: &'static str,
     #[default("")]
@@ -150,7 +151,7 @@ async fn connection(mut controller: WifiController<'static>) {
         match controller.connect().await {
             Ok(_) => println!("Wifi connected!"),
             Err(e) => {
-                println!("Failed to connect to wifi: {:?}", e);
+                println!("Failed to connect to wifi: {e:?}");
                 Timer::after(Duration::from_millis(5000)).await
             }
         }
@@ -188,15 +189,24 @@ async fn measure(stack: &'static Stack<WifiDevice<'static, WifiStaDevice>>, mut 
 
         socket.set_timeout(Some(embassy_time::Duration::from_secs(60)));
 
-        // TODO: parse IP from config
-        let ip_addr = Ipv4Address::new(192, 168, 94, 13);
+        let host_addr = match stack
+            .dns_query(CONFIG.mqtt_hostname, DnsQueryType::A)
+            .await
+            .map(|a| a[0])
+        {
+            Ok(address) => address,
+            Err(e) => {
+                println!("DNS lookup for MQTT host failed with error: {e:?}");
+                continue;
+            }
+        };
 
-        let socket_addr = (ip_addr, CONFIG.mqtt_port);
+        let socket_addr = (host_addr, CONFIG.mqtt_port);
 
         println!("Connecting to MQTT server...");
         let r = socket.connect(socket_addr).await;
         if let Err(e) = r {
-            println!("Connect error: {:?}", e);
+            println!("Connect error: {e:?}");
             continue;
         }
         println!("Connected to MQTT server");
@@ -221,7 +231,7 @@ async fn measure(stack: &'static Stack<WifiDevice<'static, WifiStaDevice>>, mut 
         );
 
         if let Err(e) = client.connect_to_broker().await {
-            println!("Couldn't connect to MQTT broker: {:?}", e);
+            println!("Couldn't connect to MQTT broker: {e:?}");
             Timer::after(Duration::from_secs(10)).await;
             continue;
         }
@@ -230,7 +240,7 @@ async fn measure(stack: &'static Stack<WifiDevice<'static, WifiStaDevice>>, mut 
             let measurement = match sensor.measure() {
                 Ok(measurement) => measurement,
                 Err(e) => {
-                    println!("Error taking measurement: {:?}", e);
+                    println!("Error taking measurement: {e:?}");
                     Timer::after(Duration::from_secs(10)).await;
                     continue;
                 }
@@ -250,7 +260,7 @@ async fn measure(stack: &'static Stack<WifiDevice<'static, WifiStaDevice>>, mut 
                 measurement.humidity,
                 measurement.pressure
             ) {
-                println!("Error generating MQTT message: {:?}", e);
+                println!("Error generating MQTT message: {e:?}");
                 Timer::after(Duration::from_secs(10)).await;
                 continue;
             }
@@ -266,7 +276,7 @@ async fn measure(stack: &'static Stack<WifiDevice<'static, WifiStaDevice>>, mut 
                 )
                 .await
             {
-                println!("Error publishing MQTT message: {:?}", e);
+                println!("Error publishing MQTT message: {e:?}");
                 Timer::after(Duration::from_secs(10)).await;
                 break;
             }
