@@ -7,7 +7,6 @@ rustflags = [
   "-C", "link-arg=-nostartfiles",
   "-C", "link-arg=-Wl,-Tlinkall.x",
   "-C", "link-arg=-Wl,--nmagic",
-  "-C", "target-feature=-loop",
 ]
 target = "xtensa-esp32-none-elf"
 

@@ -1,10 +1,9 @@
 use bme280_rs::{Bme280, Oversampling, SensorMode};
 use defmt::{write, Format, Formatter};
-use esp32_hal::{i2c::I2C, peripherals::I2C0, Delay};
-use shared_bus::{I2cProxy, NullMutex};
+use esp_hal::{i2c::I2C, peripherals::I2C0, Delay};
 
 pub struct Sensor {
-    bme280: Bme280<I2cProxy<'static, NullMutex<I2C<'static, I2C0>>>, Delay>,
+    bme280: Bme280<I2C<'static, I2C0>, Delay>,
 }
 
 #[derive(Debug)]
@@ -28,7 +27,7 @@ pub struct Measurement {
 }
 
 impl Sensor {
-    pub fn new(i2c: I2cProxy<'static, NullMutex<I2C<'static, I2C0>>>, delay: Delay) -> Sensor {
+    pub fn new(i2c: I2C<'static, I2C0>, delay: Delay) -> Sensor {
         let mut bme280 = Bme280::new(i2c, delay);
         bme280.init().unwrap();
         bme280
@@ -44,12 +43,16 @@ impl Sensor {
     }
 
     pub fn measure(&mut self) -> Result<Measurement, Error> {
-        if let Ok((Some(temperature), Some(pressure), Some(humidity))) = self.bme280.read_sample() {
-            return Ok(Measurement {
-                temperature,
-                humidity,
-                pressure,
-            });
+        if let Ok(sample) = self.bme280.read_sample() {
+            if let (Some(temperature), Some(pressure), Some(humidity)) =
+                (sample.temperature, sample.pressure, sample.humidity)
+            {
+                return Ok(Measurement {
+                    temperature,
+                    humidity,
+                    pressure,
+                });
+            }
         }
         Err(Error::Bme280Measurement)
     }
