@@ -120,3 +120,5 @@ of Influx by using the `--features json`.
 
 Refer to the [Home Assistant documentation](./docs/home-assistant.md) for
 details on how to set this up.
+
+![Home Assistant dashboard](./home-assistant.png)
