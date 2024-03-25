@@ -73,7 +73,7 @@ retrieve logs from the device using espmonitor:
 espup update
 
 . $HOME/export-esp.sh
-cargo run
+cargo run --features influx
 ```
 
 #### Flashing
@@ -82,7 +82,7 @@ Connect the device via USB, then flash it with the following command:
 
 ```bash
 . $HOME/export-esp.sh
-cargo espflash flash --release
+cargo espflash flash --release --features influx
 ```
 
 ### Setup infrastructure using Docker
@@ -112,3 +112,11 @@ You can visualise metrics by importing `./infra/influx-dashboard.json` as
 dashboard into InfluxDB.
 
 ![InfluxDB dashboard](./dashboard.png)
+
+### Setup Home Assistant or other providers
+
+It's possible to change the payload format of the MQTT message to JSON instead
+of Influx by using the `--features json`.
+
+Refer to the [Home Assistant documentation](./docs/home-assistant.md) for
+details on how to set this up.

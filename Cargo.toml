@@ -51,3 +51,8 @@ lto = "off"
 debug = true
 opt-level = 3
 lto = "off"
+
+[features]
+default = []
+influx = []
+json = []
