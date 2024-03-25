@@ -252,14 +252,31 @@ async fn measure(stack: &'static Stack<WifiDevice<'static, WifiStaDevice>>, mut 
             );
 
             let mut data: String<128> = String::new();
-            if let Err(e) = write!(
-                &mut data,
-                "weather,location={} temperature={:.2},humidity={:.2},pressure={:.2}",
-                CONFIG.location,
-                measurement.temperature,
-                measurement.humidity,
-                measurement.pressure
-            ) {
+
+            if let Err(e) = {
+                #[cfg(feature = "influx")]
+                {
+                    write!(
+                        &mut data,
+                        "weather,location={} temperature={:.2},humidity={:.2},pressure={:.2}",
+                        CONFIG.location,
+                        measurement.temperature,
+                        measurement.humidity,
+                        measurement.pressure
+                    )
+                }
+                #[cfg(feature = "json")]
+                {
+                    write!(
+                        &mut data,
+                        "{{ \"location\": \"{}\", \"temperature\": {:.2},\"humidity\": {:.2}, \"pressure\": {:.2} }}",
+                        CONFIG.location,
+                        measurement.temperature,
+                        measurement.humidity,
+                        measurement.pressure
+                    )
+                }
+            } {
                 println!("Error generating MQTT message: {e:?}");
                 Timer::after(Duration::from_secs(10)).await;
                 continue;
