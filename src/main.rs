@@ -4,6 +4,7 @@
 #![feature(type_alias_impl_trait)]
 
 use core::fmt::Write;
+use core::str::FromStr;
 use heapless::String;
 use static_cell::make_static;
 
@@ -108,7 +109,10 @@ async fn main(spawner: Spawner) {
     let sensor: Sensor = Sensor::new(i2c, delay);
 
     // initialize network stack
-    let config = embassy_net::Config::dhcpv4(Default::default());
+    let mut dhcp_config = embassy_net::DhcpConfig::default();
+    dhcp_config.hostname = Some(String::<32>::from_str(CONFIG.hostname).unwrap());
+    let config = embassy_net::Config::dhcpv4(dhcp_config);
+
     let seed = 1234; // very random, very secure seed
 
     // Init network stack
@@ -253,30 +257,29 @@ async fn measure(stack: &'static Stack<WifiDevice<'static, WifiStaDevice>>, mut 
 
             let mut data: String<128> = String::new();
 
-            if let Err(e) = {
-                #[cfg(feature = "influx")]
-                {
-                    write!(
-                        &mut data,
-                        "weather,location={} temperature={:.2},humidity={:.2},pressure={:.2}",
-                        CONFIG.location,
-                        measurement.temperature,
-                        measurement.humidity,
-                        measurement.pressure
-                    )
-                }
-                #[cfg(feature = "json")]
-                {
-                    write!(
-                        &mut data,
-                        "{{ \"location\": \"{}\", \"temperature\": {:.2},\"humidity\": {:.2}, \"pressure\": {:.2} }}",
-                        CONFIG.location,
-                        measurement.temperature,
-                        measurement.humidity,
-                        measurement.pressure
-                    )
-                }
-            } {
+            #[cfg(feature = "influx")]
+            if let Err(e) = write!(
+                &mut data,
+                "weather,location={} temperature={:.2},humidity={:.2},pressure={:.2}",
+                CONFIG.location,
+                measurement.temperature,
+                measurement.humidity,
+                measurement.pressure
+            ) {
+                println!("Error generating MQTT message: {e:?}");
+                Timer::after(Duration::from_secs(10)).await;
+                continue;
+            }
+
+            #[cfg(feature = "json")]
+            if let Err(e) = write!(
+                &mut data,
+                "{{ \"location\": \"{}\", \"temperature\": {:.2},\"humidity\": {:.2}, \"pressure\": {:.2} }}",
+                CONFIG.location,
+                measurement.temperature,
+                measurement.humidity,
+                measurement.pressure
+            ) {
                 println!("Error generating MQTT message: {e:?}");
                 Timer::after(Duration::from_secs(10)).await;
                 continue;
