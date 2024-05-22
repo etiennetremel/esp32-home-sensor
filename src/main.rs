@@ -23,10 +23,10 @@ use esp_wifi::wifi::{WifiController, WifiDevice, WifiEvent, WifiStaDevice, WifiS
 use esp_wifi::{initialize, EspWifiInitFor};
 
 use hal::clock::ClockControl;
+use hal::delay::Delay;
 use hal::gpio::IO;
 use hal::i2c::I2C;
-use hal::Delay;
-use hal::Rng;
+use hal::rng::Rng;
 use hal::{
     embassy::{self},
     peripherals::Peripherals,
@@ -79,7 +79,7 @@ async fn main(spawner: Spawner) {
     let clocks = ClockControl::max(system.clock_control).freeze();
     let delay = Delay::new(&clocks);
 
-    let timer = TimerGroup::new(peripherals.TIMG1, &clocks).timer0;
+    let timer = TimerGroup::new(peripherals.TIMG1, &clocks, None).timer0;
 
     let init = initialize(
         EspWifiInitFor::Wifi,
@@ -94,11 +94,11 @@ async fn main(spawner: Spawner) {
     let (wifi_interface, controller) =
         esp_wifi::wifi::new_with_mode(&init, wifi, WifiStaDevice).unwrap();
 
-    let timer_group0 = TimerGroup::new(peripherals.TIMG0, &clocks);
+    let timer_group0 = TimerGroup::new_async(peripherals.TIMG0, &clocks);
     embassy::init(&clocks, timer_group0);
 
     // setup i2c bus
-    let i2c = I2C::new(
+    let i2c = I2C::new_async(
         peripherals.I2C0,
         io.pins.gpio21,
         io.pins.gpio22,
