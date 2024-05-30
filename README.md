@@ -39,12 +39,16 @@ flowchart LR
 
 #### Pin-out
 
-| Pin  | ESP32 DevKit v1 Pin |
-|------|---------------------|
-| SDA  | GPIO 21 / D21       |
-| SCL  | GPIO 22 / D22       |
-| GND  | GND                 |
-| 3.3v | 3v3                 |
+| Sensor | Pin Sensor  | ESP32 DevKit v1 Pin |
+|--------|-------------|---------------------|
+| BME280 | SDA         | GPIO 21 / D21       |
+| BME280 | SCL         | GPIO 22 / D22       |
+| BME280 | GND         | GND                 |
+| BME280 | 3.3v        | 3v3                 |
+| SDS011 | RX          | GPIO 17 / U2:TXD    |
+| SDS011 | TX          | GPIO 16 / U2:RXD    |
+| SDS011 | GND         | GND                 |
+| SDS011 | 5v          | 3v3                 |
 
 #### Configuration
 
@@ -73,7 +77,12 @@ retrieve logs from the device using espmonitor:
 espup update
 
 . $HOME/export-esp.sh
-cargo run --features influx
+
+# run with default features
+cargo run
+
+# run specific features/sensors
+cargo run --features=json,bme280 --no-default-features
 ```
 
 #### Flashing
@@ -82,7 +91,33 @@ Connect the device via USB, then flash it with the following command:
 
 ```bash
 . $HOME/export-esp.sh
-cargo espflash flash --release --features influx
+cargo espflash flash --release --features=json,sds011,bme280
+```
+
+#### Available features
+
+The following Cargo features allow you to enable/disable sensors and select the
+MQTT message format to use:
+
+| Feature | Description                       | Default |
+|---------|-----------------------------------|-------- |
+| bme280  | Enable BME280 sensor              |
+| sds011  | Enable SDS011 sensor              |
+| influx  | Set MQTT payload format to Influx |
+| json    | Set MQTT payload format to Json   |
+
+For example, to only enable BME280 with JSON format:
+
+```bash
+. $HOME/export-esp.sh
+# enable BME280 with MQTT message in JSON format
+cargo espflash flash --release --features json,bme280
+
+# enable BME280, SDS011 with MQTT message in JSON format
+cargo espflash flash --release --features json,bme280,sds011
+
+# and by default, features enabled are BME280, SDS011 with Influx format
+cargo espflash flash --release
 ```
 
 ### Setup infrastructure using Docker

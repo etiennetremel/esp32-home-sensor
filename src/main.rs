@@ -3,35 +3,39 @@
 #![feature(generic_arg_infer)]
 #![feature(type_alias_impl_trait)]
 
-use core::fmt::Write;
+use core::fmt::{Error, Write};
 use core::str::FromStr;
 use heapless::String;
+use log::info;
 use static_cell::make_static;
 
 use embassy_executor::Spawner;
-use embassy_net::dns::DnsQueryType;
-use embassy_net::tcp::TcpSocket;
-use embassy_net::{Stack, StackResources};
-use embassy_time::{Duration, Timer};
+use embassy_net::{dns::DnsQueryType, tcp::TcpSocket, Stack, StackResources};
+use embassy_time::{Delay, Duration, Timer};
 
 use esp_backtrace as _;
 use esp_hal as hal;
 use esp_println::logger::init_logger;
-use esp_println::println;
-use esp_wifi::wifi::{ClientConfiguration, Configuration};
-use esp_wifi::wifi::{WifiController, WifiDevice, WifiEvent, WifiStaDevice, WifiState};
-use esp_wifi::{initialize, EspWifiInitFor};
+use esp_wifi::{
+    initialize,
+    wifi::{
+        ClientConfiguration, Configuration, WifiController, WifiDevice, WifiEvent, WifiStaDevice,
+        WifiState,
+    },
+    EspWifiInitFor,
+};
 
-use hal::clock::ClockControl;
-use hal::delay::Delay;
-use hal::gpio::IO;
-use hal::i2c::I2C;
-use hal::rng::Rng;
 use hal::{
+    clock::ClockControl,
     embassy::{self},
-    peripherals::Peripherals,
+    gpio::IO,
+    i2c::I2C,
+    peripherals::{Peripherals, I2C0, UART2},
     prelude::*,
+    rng::Rng,
     timer::TimerGroup,
+    uart::{TxRxPins, Uart},
+    Async,
 };
 
 use rust_mqtt::{
@@ -43,6 +47,10 @@ use rust_mqtt::{
 mod sensor;
 
 use sensor::Sensor;
+
+const READ_BUF_SIZE: usize = 10;
+const AT_CMD: u8 = 0xAB;
+const MEASUREMENT_INTERVAL_SECONDS: u64 = 5 * 60; // 5minutes
 
 #[toml_cfg::toml_config]
 pub struct Config {
@@ -77,7 +85,7 @@ async fn main(spawner: Spawner) {
     let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
 
     let clocks = ClockControl::max(system.clock_control).freeze();
-    let delay = Delay::new(&clocks);
+    let delay = Delay;
 
     let timer = TimerGroup::new(peripherals.TIMG1, &clocks, None).timer0;
 
@@ -106,7 +114,28 @@ async fn main(spawner: Spawner) {
         &clocks,
     );
 
-    let sensor: Sensor = Sensor::new(i2c, delay);
+    // setup uart
+    let pins = TxRxPins::new_tx_rx(
+        io.pins.gpio17.into_push_pull_output(),
+        io.pins.gpio16.into_floating_input(),
+    );
+
+    let uart_config = esp_hal::uart::config::Config {
+        baudrate: 9600,
+        data_bits: esp_hal::uart::config::DataBits::DataBits8,
+        parity: esp_hal::uart::config::Parity::ParityNone,
+        stop_bits: esp_hal::uart::config::StopBits::STOP1,
+        ..esp_hal::uart::config::Config::default()
+    };
+
+    let mut uart = Uart::new_async_with_config(peripherals.UART2, uart_config, Some(pins), &clocks);
+    uart.set_at_cmd(esp_hal::uart::config::AtCmdConfig::new(
+        None, None, None, AT_CMD, None,
+    ));
+    uart.set_rx_fifo_full_threshold(READ_BUF_SIZE as u16)
+        .unwrap();
+
+    let sensor = Sensor::new(i2c, uart, delay).await.unwrap();
 
     // initialize network stack
     let mut dhcp_config = embassy_net::DhcpConfig::default();
@@ -130,8 +159,10 @@ async fn main(spawner: Spawner) {
 
 #[embassy_executor::task]
 async fn connection(mut controller: WifiController<'static>) {
-    println!("start connection task");
-    println!("Device capabilities: {:?}", controller.get_capabilities());
+    info!(
+        "Start connection task, device capabilities: {:?}",
+        controller.get_capabilities()
+    );
     loop {
         if esp_wifi::wifi::get_wifi_state() == WifiState::StaConnected {
             // wait until we're no longer connected
@@ -146,16 +177,16 @@ async fn connection(mut controller: WifiController<'static>) {
                 ..Default::default()
             });
             controller.set_configuration(&client_config).unwrap();
-            println!("Starting wifi");
+            info!("Starting wifi");
             controller.start().await.unwrap();
-            println!("Wifi started!");
+            info!("Wifi started!");
         }
-        println!("About to connect to {:?}...", CONFIG.wifi_ssid);
+        info!("About to connect to {:?}...", CONFIG.wifi_ssid);
 
         match controller.connect().await {
-            Ok(_) => println!("Wifi connected!"),
+            Ok(_) => info!("Wifi connected!"),
             Err(e) => {
-                println!("Failed to connect to wifi: {e:?}");
+                info!("Failed to connect to wifi: {e:?}");
                 Timer::after(Duration::from_millis(5000)).await
             }
         }
@@ -168,7 +199,10 @@ async fn net_task(stack: &'static Stack<WifiDevice<'static, WifiStaDevice>>) {
 }
 
 #[embassy_executor::task]
-async fn measure(stack: &'static Stack<WifiDevice<'static, WifiStaDevice>>, mut sensor: Sensor) {
+async fn measure(
+    stack: &'static Stack<WifiDevice<'static, WifiStaDevice>>,
+    mut sensor: Sensor<I2C<'static, I2C0, Async>, Uart<'static, UART2, Async>, Delay>,
+) {
     loop {
         if stack.is_link_up() {
             break;
@@ -176,22 +210,50 @@ async fn measure(stack: &'static Stack<WifiDevice<'static, WifiStaDevice>>, mut 
         Timer::after(Duration::from_millis(500)).await;
     }
 
-    println!("Waiting to get IP address...");
+    info!("Waiting to get IP address...");
     loop {
         if let Some(config) = stack.config_v4() {
-            println!("Got IP: {}", config.address);
+            info!("Got IP: {}", config.address);
             break;
         }
         Timer::after(Duration::from_millis(500)).await;
     }
 
     loop {
+        let measurement = match sensor.measure().await {
+            Ok(measurement) => measurement,
+            Err(e) => {
+                info!("Error taking measurement: {e:?}");
+                Timer::after(Duration::from_secs(10)).await;
+                continue;
+            }
+        };
+        let args = [
+            #[cfg(feature = "bme280")]
+            ("temperature", measurement.temperature),
+            #[cfg(feature = "bme280")]
+            ("humidity", measurement.humidity),
+            #[cfg(feature = "bme280")]
+            ("pressure", measurement.pressure),
+            #[cfg(feature = "sds011")]
+            ("air_quality_pm2_5", measurement.air_quality_pm2_5),
+            #[cfg(feature = "sds011")]
+            ("air_quality_pm10", measurement.air_quality_pm10),
+        ];
+
+        let message = match format_mqtt_message(&args) {
+            Ok(message) => message,
+            Err(e) => {
+                info!("Error formating MQTT message: {e:?}");
+                Timer::after(Duration::from_secs(10)).await;
+                continue;
+            }
+        };
+
         let mut rx_buffer = [0; 4096];
         let mut tx_buffer = [0; 4096];
 
         let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
-
-        socket.set_timeout(Some(embassy_time::Duration::from_secs(60)));
 
         let host_addr = match stack
             .dns_query(CONFIG.mqtt_hostname, DnsQueryType::A)
@@ -200,22 +262,22 @@ async fn measure(stack: &'static Stack<WifiDevice<'static, WifiStaDevice>>, mut 
         {
             Ok(address) => address,
             Err(e) => {
-                println!("DNS lookup for MQTT host failed with error: {e:?}");
+                info!("DNS lookup for MQTT host failed with error: {e:?}");
                 continue;
             }
         };
 
         let socket_addr = (host_addr, CONFIG.mqtt_port);
 
-        println!("Connecting to MQTT server...");
+        info!("Connecting to MQTT server...");
         let r = socket.connect(socket_addr).await;
         if let Err(e) = r {
-            println!("Connect error: {e:?}");
+            info!("Connect error: {e:?}");
             continue;
         }
-        println!("Connected to MQTT server");
+        info!("Connected to MQTT server");
 
-        println!("Initialising MQTT connection");
+        info!("Initialising MQTT connection");
         let mut mqtt_rx_buffer = [0; 1024];
         let mut mqtt_tx_buffer = [0; 1024];
         let mut mqtt_config: ClientConfig<5, CountingRng> = ClientConfig::new(
@@ -235,76 +297,58 @@ async fn measure(stack: &'static Stack<WifiDevice<'static, WifiStaDevice>>, mut 
         );
 
         if let Err(e) = client.connect_to_broker().await {
-            println!("Couldn't connect to MQTT broker: {e:?}");
+            info!("Couldn't connect to MQTT broker: {e:?}");
             Timer::after(Duration::from_secs(10)).await;
             continue;
         }
 
-        loop {
-            let measurement = match sensor.measure() {
-                Ok(measurement) => measurement,
-                Err(e) => {
-                    println!("Error taking measurement: {e:?}");
-                    Timer::after(Duration::from_secs(10)).await;
-                    continue;
-                }
-            };
+        info!("Publishing: {:?}", message);
+        if let Err(e) = client
+            .send_message(
+                CONFIG.mqtt_topic,
+                message.as_bytes(),
+                QualityOfService::QoS0,
+                false,
+            )
+            .await
+        {
+            info!("Error publishing MQTT message: {e:?}");
+            Timer::after(Duration::from_secs(10)).await;
+            break;
+        }
 
-            println!(
-                "Measured {:.2} C, {:.2} % RH, {:.2} Pa",
-                measurement.temperature, measurement.humidity, measurement.pressure
-            );
+        info!("Message published");
 
-            let mut data: String<128> = String::new();
+        // Wait until next measurement
+        Timer::after(Duration::from_secs(MEASUREMENT_INTERVAL_SECONDS)).await;
+    }
+}
 
-            #[cfg(feature = "influx")]
-            if let Err(e) = write!(
-                &mut data,
-                "weather,location={} temperature={:.2},humidity={:.2},pressure={:.2}",
-                CONFIG.location,
-                measurement.temperature,
-                measurement.humidity,
-                measurement.pressure
-            ) {
-                println!("Error generating MQTT message: {e:?}");
-                Timer::after(Duration::from_secs(10)).await;
-                continue;
+fn format_mqtt_message(args: &[(&str, f32)]) -> Result<String<256>, Error> {
+    let mut payload: String<256> = String::new();
+
+    #[cfg(feature = "json")]
+    {
+        write!(payload, "{{\"location\": \"{}\"", CONFIG.location)?;
+        for (key, value) in args {
+            write!(payload, ", \"{}\": \"{:.2}\"", key, value)?;
+        }
+        write!(payload, "}}")?;
+    }
+
+    #[cfg(feature = "influx")]
+    {
+        write!(payload, "weather,location={}", CONFIG.location)?;
+        let mut first = true;
+        for (key, value) in args {
+            if first {
+                write!(payload, " {}={:.2}", key, value)?;
+                first = false;
+            } else {
+                write!(payload, ",{}={:.2}", key, value)?;
             }
-
-            #[cfg(feature = "json")]
-            if let Err(e) = write!(
-                &mut data,
-                "{{ \"location\": \"{}\", \"temperature\": {:.2},\"humidity\": {:.2}, \"pressure\": {:.2} }}",
-                CONFIG.location,
-                measurement.temperature,
-                measurement.humidity,
-                measurement.pressure
-            ) {
-                println!("Error generating MQTT message: {e:?}");
-                Timer::after(Duration::from_secs(10)).await;
-                continue;
-            }
-
-            println!("Publishing: {:?}", data);
-
-            if let Err(e) = client
-                .send_message(
-                    CONFIG.mqtt_topic,
-                    data.as_bytes(),
-                    QualityOfService::QoS0,
-                    false,
-                )
-                .await
-            {
-                println!("Error publishing MQTT message: {e:?}");
-                Timer::after(Duration::from_secs(10)).await;
-                break;
-            }
-
-            println!("Message published");
-
-            // take measurement every 30seconds
-            Timer::after(Duration::from_secs(30)).await;
         }
     }
+
+    Ok(payload)
 }
