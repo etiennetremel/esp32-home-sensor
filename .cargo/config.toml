@@ -1,5 +1,5 @@
 [target.xtensa-esp32-none-elf]
-runner = "espflash --monitor"
+runner = "espflash flash --monitor"
 
 [build]
 rustflags = [
@@ -11,4 +11,4 @@ rustflags = [
 target = "xtensa-esp32-none-elf"
 
 [unstable]
-build-std = ["core"]
+build-std = ["alloc", "core"]
