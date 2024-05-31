@@ -1,0 +1,2 @@
+[connection]
+serial = "/dev/cu.usbserial-0001"

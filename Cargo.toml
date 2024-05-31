@@ -32,9 +32,6 @@ toml-cfg = "0.2.0"
 static_cell = { version = "2.1", features = ["nightly"] }
 
 [profile.release]
-codegen-units    = 1
-debug            = 2
-debug-assertions = false
 incremental      = false
 opt-level        = 3
 lto = 'fat'
