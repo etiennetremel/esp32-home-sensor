@@ -89,6 +89,13 @@ async fn main(spawner: Spawner) {
 
     let timer = TimerGroup::new(peripherals.TIMG1, &clocks, None).timer0;
 
+    let timer_group0 = TimerGroup::new_async(peripherals.TIMG0, &clocks);
+    embassy::init(&clocks, timer_group0);
+
+    // possibly high transient required at init
+    // https://github.com/esp-rs/esp-hal/issues/1626
+    Timer::after(Duration::from_millis(1000)).await;
+
     let init = initialize(
         EspWifiInitFor::Wifi,
         timer,
@@ -101,9 +108,6 @@ async fn main(spawner: Spawner) {
     let wifi = peripherals.WIFI;
     let (wifi_interface, controller) =
         esp_wifi::wifi::new_with_mode(&init, wifi, WifiStaDevice).unwrap();
-
-    let timer_group0 = TimerGroup::new_async(peripherals.TIMG0, &clocks);
-    embassy::init(&clocks, timer_group0);
 
     // setup i2c bus
     let i2c = I2C::new_async(
