@@ -32,13 +32,13 @@ toml-cfg = "0.2.0"
 static_cell = { version = "2.1", features = ["nightly"] }
 
 [profile.release]
-incremental      = false
-opt-level        = 3
+incremental = false
+opt-level = 3
 lto = 'fat'
-overflow-checks  = false
+overflow-checks = false
 
 [features]
-default = ["sds011", "bme280", "json"]
+default = []
 influx = []
 json = []
 sds011 = []

@@ -78,11 +78,8 @@ espup update
 
 . $HOME/export-esp.sh
 
-# run with default features
-cargo run
-
 # run specific features/sensors
-cargo run --features=influx,bme280 --no-default-features
+cargo run --features=influx,bme280
 ```
 
 #### Flashing
@@ -99,12 +96,12 @@ cargo espflash flash --release --features=json,sds011,bme280
 The following Cargo features allow you to enable/disable sensors and select the
 MQTT message format to use:
 
-| Feature | Description                       | Default |
-|---------|-----------------------------------|-------- |
-| bme280  | Enable BME280 sensor              | x
-| sds011  | Enable SDS011 sensor              | x
+| Feature | Description                       |
+|---------|-----------------------------------|
+| bme280  | Enable BME280 sensor              |
+| sds011  | Enable SDS011 sensor              |
 | influx  | Set MQTT payload format to Influx |
-| json    | Set MQTT payload format to Json   | x
+| json    | Set MQTT payload format to Json   |
 
 For example, to only enable BME280 with JSON format:
 
@@ -115,9 +112,6 @@ cargo espflash flash --release --features influx,bme280
 
 # enable BME280, SDS011 with MQTT message in JSON format
 cargo espflash flash --release --features json,bme280,sds011
-
-# and by default, features enabled are BME280, SDS011 with JSON format
-cargo espflash flash --release
 ```
 
 ### Setup infrastructure using Docker

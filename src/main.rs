@@ -44,13 +44,15 @@ use rust_mqtt::{
     utils::rng_generator::CountingRng,
 };
 
-mod sensor;
+mod bme280;
+mod sds011;
 
-use sensor::Sensor;
+use bme280::Bme280;
+use sds011::Sds011;
 
+const MEASUREMENT_INTERVAL_SECONDS: u64 = 5 * 60; // 5minutes
 const READ_BUF_SIZE: usize = 10;
 const AT_CMD: u8 = 0xAB;
-const MEASUREMENT_INTERVAL_SECONDS: u64 = 5 * 60; // 5minutes
 
 #[toml_cfg::toml_config]
 pub struct Config {
@@ -73,6 +75,11 @@ pub struct Config {
     mqtt_password: &'static str,
     #[default("sensor")]
     mqtt_topic: &'static str,
+}
+
+pub struct Sensors<I2C, S, D> {
+    bme280: Option<Bme280<I2C, D>>,
+    sds011: Option<Sds011<S>>,
 }
 
 #[main]
@@ -109,37 +116,47 @@ async fn main(spawner: Spawner) {
     let (wifi_interface, controller) =
         esp_wifi::wifi::new_with_mode(&init, wifi, WifiStaDevice).unwrap();
 
-    // setup i2c bus
-    let i2c = I2C::new_async(
-        peripherals.I2C0,
-        io.pins.gpio21,
-        io.pins.gpio22,
-        100u32.kHz(),
-        &clocks,
-    );
-
-    // setup uart
-    let pins = TxRxPins::new_tx_rx(
-        io.pins.gpio17.into_push_pull_output(),
-        io.pins.gpio16.into_floating_input(),
-    );
-
-    let uart_config = esp_hal::uart::config::Config {
-        baudrate: 9600,
-        data_bits: esp_hal::uart::config::DataBits::DataBits8,
-        parity: esp_hal::uart::config::Parity::ParityNone,
-        stop_bits: esp_hal::uart::config::StopBits::STOP1,
-        ..esp_hal::uart::config::Config::default()
+    let mut sensors = Sensors {
+        bme280: None,
+        sds011: None,
     };
 
-    let mut uart = Uart::new_async_with_config(peripherals.UART2, uart_config, Some(pins), &clocks);
-    uart.set_at_cmd(esp_hal::uart::config::AtCmdConfig::new(
-        None, None, None, AT_CMD, None,
-    ));
-    uart.set_rx_fifo_full_threshold(READ_BUF_SIZE as u16)
-        .unwrap();
+    #[cfg(feature = "bme280")]
+    {
+        let i2c = I2C::new_async(
+            peripherals.I2C0,
+            io.pins.gpio21,
+            io.pins.gpio22,
+            100u32.kHz(),
+            &clocks,
+        );
+        sensors.bme280 = Some(Bme280::new(i2c, delay).await.unwrap());
+    }
 
-    let sensor = Sensor::new(i2c, uart, delay).await.unwrap();
+    #[cfg(feature = "sds011")]
+    {
+        let pins = TxRxPins::new_tx_rx(
+            io.pins.gpio17.into_push_pull_output(),
+            io.pins.gpio16.into_floating_input(),
+        );
+
+        let uart_config = esp_hal::uart::config::Config {
+            baudrate: 9600,
+            data_bits: esp_hal::uart::config::DataBits::DataBits8,
+            parity: esp_hal::uart::config::Parity::ParityNone,
+            stop_bits: esp_hal::uart::config::StopBits::STOP1,
+            ..esp_hal::uart::config::Config::default()
+        };
+
+        let mut uart =
+            Uart::new_async_with_config(peripherals.UART2, uart_config, Some(pins), &clocks);
+        uart.set_at_cmd(esp_hal::uart::config::AtCmdConfig::new(
+            None, None, None, AT_CMD, None,
+        ));
+        uart.set_rx_fifo_full_threshold(READ_BUF_SIZE as u16)
+            .unwrap();
+        sensors.sds011 = Some(Sds011::new(uart).await.unwrap());
+    }
 
     // initialize network stack
     let mut dhcp_config = embassy_net::DhcpConfig::default();
@@ -158,7 +175,7 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(connection(controller)).ok();
     spawner.spawn(net_task(stack)).ok();
-    spawner.spawn(measure(stack, sensor)).ok();
+    spawner.spawn(measure(stack, sensors)).ok();
 }
 
 #[embassy_executor::task]
@@ -205,7 +222,7 @@ async fn net_task(stack: &'static Stack<WifiDevice<'static, WifiStaDevice>>) {
 #[embassy_executor::task]
 async fn measure(
     stack: &'static Stack<WifiDevice<'static, WifiStaDevice>>,
-    mut sensor: Sensor<I2C<'static, I2C0, Async>, Uart<'static, UART2, Async>, Delay>,
+    mut sensors: Sensors<I2C<'static, I2C0, Async>, Uart<'static, UART2, Async>, Delay>,
 ) {
     loop {
         if stack.is_link_up() {
@@ -224,26 +241,53 @@ async fn measure(
     }
 
     loop {
-        let measurement = match sensor.measure().await {
-            Ok(measurement) => measurement,
-            Err(e) => {
-                info!("Error taking measurement: {e:?}");
-                Timer::after(Duration::from_secs(10)).await;
-                continue;
+        let mut args: [(&'static str, f32); 5] = [("", 0.0); 5];
+        let mut index = 0;
+
+        #[cfg(feature = "bme280")]
+        if let Some(ref mut bme280) = sensors.bme280 {
+            match bme280.measure().await {
+                Ok(measurement) => {
+                    args[index] = ("temperature", measurement.temperature);
+                    index += 1;
+                    args[index] = ("humidity", measurement.humidity);
+                    index += 1;
+                    args[index] = ("pressure", measurement.pressure);
+                    index += 1;
+                }
+                Err(e) => {
+                    info!("Error taking BME280 measurement: {:?}", e);
+                    Timer::after(Duration::from_secs(10)).await;
+                    continue;
+                }
             }
+        } else {
+            // Handle the case where bme280 is None if necessary
+            info!("BME280 sensor is not available");
+            Timer::after(Duration::from_secs(10)).await;
+            continue;
         };
-        let args = [
-            #[cfg(feature = "bme280")]
-            ("temperature", measurement.temperature),
-            #[cfg(feature = "bme280")]
-            ("humidity", measurement.humidity),
-            #[cfg(feature = "bme280")]
-            ("pressure", measurement.pressure),
-            #[cfg(feature = "sds011")]
-            ("air_quality_pm2_5", measurement.air_quality_pm2_5),
-            #[cfg(feature = "sds011")]
-            ("air_quality_pm10", measurement.air_quality_pm10),
-        ];
+
+        #[cfg(feature = "sds011")]
+        if let Some(ref mut sds011) = sensors.sds011 {
+            match sds011.measure().await {
+                Ok(measurement) => {
+                    args[index] = ("air_quality_pm2_5", measurement.pm2_5);
+                    index += 1;
+                    args[index] = ("air_quality_pm10", measurement.pm10);
+                }
+                Err(e) => {
+                    info!("Error taking SDS011 measurement: {:?}", e);
+                    Timer::after(Duration::from_secs(10)).await;
+                    continue;
+                }
+            }
+        } else {
+            // Handle the case where bme280 is None if necessary
+            info!("SDS011 sensor is not available");
+            Timer::after(Duration::from_secs(10)).await;
+            continue;
+        };
 
         let message = match format_mqtt_message(&args) {
             Ok(message) => message,
