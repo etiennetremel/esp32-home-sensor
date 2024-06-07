@@ -17,7 +17,6 @@ use esp_backtrace as _;
 use esp_hal as hal;
 use esp_println::logger::init_logger;
 use esp_wifi::{
-    initialize,
     wifi::{
         ClientConfiguration, Configuration, WifiController, WifiDevice, WifiEvent, WifiStaDevice,
         WifiState,
@@ -27,13 +26,13 @@ use esp_wifi::{
 
 use hal::{
     clock::ClockControl,
-    embassy::{self},
-    gpio::IO,
+    gpio::Io,
     i2c::I2C,
     peripherals::{Peripherals, I2C0, UART2},
     prelude::*,
     rng::Rng,
-    timer::TimerGroup,
+    system::SystemControl,
+    timer::timg::TimerGroup,
     uart::{TxRxPins, Uart},
     Async,
 };
@@ -87,9 +86,9 @@ async fn main(spawner: Spawner) {
     init_logger(log::LevelFilter::Info);
 
     let peripherals = Peripherals::take();
-    let system = peripherals.SYSTEM.split();
+    let system = SystemControl::new(peripherals.SYSTEM);
 
-    let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
+    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
 
     let clocks = ClockControl::max(system.clock_control).freeze();
     let delay = Delay;
@@ -97,17 +96,17 @@ async fn main(spawner: Spawner) {
     let timer = TimerGroup::new(peripherals.TIMG1, &clocks, None).timer0;
 
     let timer_group0 = TimerGroup::new_async(peripherals.TIMG0, &clocks);
-    embassy::init(&clocks, timer_group0);
+    esp_hal_embassy::init(&clocks, timer_group0);
 
     // possibly high transient required at init
     // https://github.com/esp-rs/esp-hal/issues/1626
     Timer::after(Duration::from_millis(1000)).await;
 
-    let init = initialize(
+    let init = esp_wifi::initialize(
         EspWifiInitFor::Wifi,
         timer,
         Rng::new(peripherals.RNG),
-        system.radio_clock_control,
+        peripherals.RADIO_CLK,
         &clocks,
     )
     .unwrap();
@@ -135,10 +134,7 @@ async fn main(spawner: Spawner) {
 
     #[cfg(feature = "sds011")]
     {
-        let pins = TxRxPins::new_tx_rx(
-            io.pins.gpio17.into_push_pull_output(),
-            io.pins.gpio16.into_floating_input(),
-        );
+        let pins = TxRxPins::new_tx_rx(io.pins.gpio17, io.pins.gpio16);
 
         let uart_config = esp_hal::uart::config::Config {
             baudrate: 9600,

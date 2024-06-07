@@ -79,7 +79,7 @@ espup update
 . $HOME/export-esp.sh
 
 # run specific features/sensors
-cargo run --features=influx,bme280
+cargo run --release --features json,bme280 --no-default-features
 ```
 
 #### Flashing
