@@ -9,12 +9,8 @@ license = "MIT"
 sds011-nostd-rs = { rev ="010353fc33be4607c45fe8c0df6fce9101e12831", git = "https://github.com/etiennetremel/sds011-nostd-rs.git" }
 bme280-rs = "0.2.0"
 
-embassy-executor = { version = "0.5.0", package = "embassy-executor", features = [
-    "executor-thread",
-    "integrated-timers",
-    "task-arena-size-24576",
-] }
-embassy-net = { version = "0.4.0", features = ["tcp", "udp", "dhcpv4", "dhcpv4-hostname", "dns", "medium-ethernet"] }
+embassy-executor = { version = "0.5.0", package = "embassy-executor", features = [ "executor-thread", "integrated-timers", "task-arena-size-24576", ] }
+embassy-net = { version = "0.4.0", features = [ "tcp", "udp", "dhcpv4", "dhcpv4-hostname", "dns", "medium-ethernet" ] }
 embassy-time = { version = "0.3.1" }
 
 embedded-io-async = "0.6.1"
@@ -24,7 +20,8 @@ esp-backtrace = { version = "0.12.0", features = ["esp32", "panic-handler", "pri
 esp-hal = { version = "0.18.0", features = [ "esp32"] }
 esp-hal-embassy = { version = "0.1.0", features = [ "time-timg0"] }
 esp-println = { version = "0.9.1", features = [ "esp32", "log", "uart" ] }
-esp-wifi = { version = "0.6.0", default-features = false, features = [ "async", "dhcpv4", "dns", "embassy-net", "embedded-svc", "esp32", "tcp", "wifi" ] }
+esp-wifi = { version = "0.6.0", default-features = false, features = [ "async",
+  "dhcpv4", "dns", "embassy-net", "embedded-svc", "esp32", "tcp", "wifi" ] }
 
 heapless = { version = "0.8.0", default-features = false }
 log = "0.4.21"
@@ -33,12 +30,6 @@ toml-cfg = "0.2.0"
 static_cell = { version = "2.1.0", features = ["nightly"] }
 
 [profile.release]
-incremental = false
-opt-level = 3
-lto = 'fat'
-overflow-checks = false
-
-[profile.dev]
 incremental = false
 opt-level = 3
 lto = 'fat'

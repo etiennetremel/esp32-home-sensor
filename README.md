@@ -65,6 +65,7 @@ mqtt_port = 1883
 mqtt_username = "esp32-outdoor"
 mqtt_password = "someranddompassword"
 mqtt_topic = "sensors"
+measurement_interval_seconds = 300
 location = "outdoor"
 ```
 

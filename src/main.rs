@@ -49,9 +49,9 @@ mod sds011;
 use bme280::Bme280;
 use sds011::Sds011;
 
-const MEASUREMENT_INTERVAL_SECONDS: u64 = 5 * 60; // 5minutes
 const READ_BUF_SIZE: usize = 10;
 const AT_CMD: u8 = 0xAB;
+const TOTAL_DATA_POINTS: usize = get_total_data_points();
 
 #[toml_cfg::toml_config]
 pub struct Config {
@@ -74,6 +74,8 @@ pub struct Config {
     mqtt_password: &'static str,
     #[default("sensor")]
     mqtt_topic: &'static str,
+    #[default(60)]
+    measurement_interval_seconds: u64,
 }
 
 pub struct Sensors<I2C, S, D> {
@@ -120,8 +122,7 @@ async fn main(spawner: Spawner) {
         sds011: None,
     };
 
-    #[cfg(feature = "bme280")]
-    {
+    if cfg!(feature = "bme280") {
         let i2c = I2C::new_async(
             peripherals.I2C0,
             io.pins.gpio21,
@@ -132,8 +133,7 @@ async fn main(spawner: Spawner) {
         sensors.bme280 = Some(Bme280::new(i2c, delay).await.unwrap());
     }
 
-    #[cfg(feature = "sds011")]
-    {
+    if cfg!(feature = "sds011") {
         let pins = TxRxPins::new_tx_rx(io.pins.gpio17, io.pins.gpio16);
 
         let uart_config = esp_hal::uart::config::Config {
@@ -198,8 +198,8 @@ async fn connection(mut controller: WifiController<'static>) {
             controller.start().await.unwrap();
             info!("Wifi started!");
         }
-        info!("About to connect to {:?}...", CONFIG.wifi_ssid);
 
+        info!("About to connect to {:?}...", CONFIG.wifi_ssid);
         match controller.connect().await {
             Ok(_) => info!("Wifi connected!"),
             Err(e) => {
@@ -220,6 +220,9 @@ async fn measure(
     stack: &'static Stack<WifiDevice<'static, WifiStaDevice>>,
     mut sensors: Sensors<I2C<'static, I2C0, Async>, Uart<'static, UART2, Async>, Delay>,
 ) {
+    let mut rx_buffer = [0; 4096];
+    let mut tx_buffer = [0; 4096];
+
     loop {
         if stack.is_link_up() {
             break;
@@ -237,52 +240,55 @@ async fn measure(
     }
 
     loop {
-        let mut args: [(&'static str, f32); 5] = [("", 0.0); 5];
+        let mut args: [(&'static str, f32); TOTAL_DATA_POINTS] = [("", 0.0); TOTAL_DATA_POINTS];
+
         let mut index = 0;
 
-        #[cfg(feature = "bme280")]
-        if let Some(ref mut bme280) = sensors.bme280 {
-            match bme280.measure().await {
-                Ok(measurement) => {
-                    args[index] = ("temperature", measurement.temperature);
-                    index += 1;
-                    args[index] = ("humidity", measurement.humidity);
-                    index += 1;
-                    args[index] = ("pressure", measurement.pressure);
-                    index += 1;
+        if cfg!(feature = "bme280") {
+            if let Some(ref mut bme280) = sensors.bme280 {
+                match bme280.measure().await {
+                    Ok(measurement) => {
+                        args[index] = ("temperature", measurement.temperature);
+                        index += 1;
+                        args[index] = ("humidity", measurement.humidity);
+                        index += 1;
+                        args[index] = ("pressure", measurement.pressure);
+                        index += 1;
+                    }
+                    Err(e) => {
+                        info!("Error taking BME280 measurement: {:?}", e);
+                        Timer::after(Duration::from_secs(10)).await;
+                        continue;
+                    }
                 }
-                Err(e) => {
-                    info!("Error taking BME280 measurement: {:?}", e);
-                    Timer::after(Duration::from_secs(10)).await;
-                    continue;
-                }
+            } else {
+                // Handle the case where bme280 is None if necessary
+                info!("BME280 sensor is not available");
+                Timer::after(Duration::from_secs(10)).await;
+                continue;
             }
-        } else {
-            // Handle the case where bme280 is None if necessary
-            info!("BME280 sensor is not available");
-            Timer::after(Duration::from_secs(10)).await;
-            continue;
         };
 
-        #[cfg(feature = "sds011")]
-        if let Some(ref mut sds011) = sensors.sds011 {
-            match sds011.measure().await {
-                Ok(measurement) => {
-                    args[index] = ("air_quality_pm2_5", measurement.pm2_5);
-                    index += 1;
-                    args[index] = ("air_quality_pm10", measurement.pm10);
+        if cfg!(feature = "sds011") {
+            if let Some(ref mut sds011) = sensors.sds011 {
+                match sds011.measure().await {
+                    Ok(measurement) => {
+                        args[index] = ("air_quality_pm2_5", measurement.pm2_5);
+                        index += 1;
+                        args[index] = ("air_quality_pm10", measurement.pm10);
+                    }
+                    Err(e) => {
+                        info!("Error taking SDS011 measurement: {:?}", e);
+                        Timer::after(Duration::from_secs(10)).await;
+                        continue;
+                    }
                 }
-                Err(e) => {
-                    info!("Error taking SDS011 measurement: {:?}", e);
-                    Timer::after(Duration::from_secs(10)).await;
-                    continue;
-                }
+            } else {
+                // Handle the case where bme280 is None if necessary
+                info!("SDS011 sensor is not available");
+                Timer::after(Duration::from_secs(10)).await;
+                continue;
             }
-        } else {
-            // Handle the case where bme280 is None if necessary
-            info!("SDS011 sensor is not available");
-            Timer::after(Duration::from_secs(10)).await;
-            continue;
         };
 
         let message = match format_mqtt_message(&args) {
@@ -293,9 +299,6 @@ async fn measure(
                 continue;
             }
         };
-
-        let mut rx_buffer = [0; 4096];
-        let mut tx_buffer = [0; 4096];
 
         let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
 
@@ -346,7 +349,10 @@ async fn measure(
             continue;
         }
 
-        info!("Publishing: {:?}", message);
+        info!(
+            "Publishing to topic {:?}, payload: {:?}",
+            CONFIG.mqtt_topic, message
+        );
         if let Err(e) = client
             .send_message(
                 CONFIG.mqtt_topic,
@@ -361,18 +367,18 @@ async fn measure(
             break;
         }
 
-        info!("Message published");
-
-        // Wait until next measurement
-        Timer::after(Duration::from_secs(MEASUREMENT_INTERVAL_SECONDS)).await;
+        info!(
+            "Message published, waiting {:?} seconds",
+            CONFIG.measurement_interval_seconds
+        );
+        Timer::after(Duration::from_secs(CONFIG.measurement_interval_seconds)).await;
     }
 }
 
 fn format_mqtt_message(args: &[(&str, f32)]) -> Result<String<256>, Error> {
     let mut payload: String<256> = String::new();
 
-    #[cfg(feature = "json")]
-    {
+    if cfg!(feature = "json") {
         write!(payload, "{{\"location\": \"{}\"", CONFIG.location)?;
         for (key, value) in args {
             write!(payload, ", \"{}\": \"{:.2}\"", key, value)?;
@@ -380,8 +386,7 @@ fn format_mqtt_message(args: &[(&str, f32)]) -> Result<String<256>, Error> {
         write!(payload, "}}")?;
     }
 
-    #[cfg(feature = "influx")]
-    {
+    if cfg!(feature = "influx") {
         write!(payload, "weather,location={}", CONFIG.location)?;
         let mut first = true;
         for (key, value) in args {
@@ -395,4 +400,16 @@ fn format_mqtt_message(args: &[(&str, f32)]) -> Result<String<256>, Error> {
     }
 
     Ok(payload)
+}
+
+const fn get_total_data_points() -> usize {
+    if cfg!(feature = "bme280") && cfg!(feature = "sds011") {
+        5
+    } else if cfg!(feature = "bme280") {
+        3
+    } else if cfg!(feature = "sds011") {
+        2
+    } else {
+        0
+    }
 }
