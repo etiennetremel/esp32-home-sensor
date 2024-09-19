@@ -7,12 +7,12 @@ use core::fmt::{Error, Write};
 use core::str::FromStr;
 use heapless::String;
 use log::info;
-use static_cell::make_static;
 
 use embassy_executor::Spawner;
 use embassy_net::{dns::DnsQueryType, tcp::TcpSocket, Stack, StackResources};
 use embassy_time::{Delay, Duration, Timer};
 
+use esp_alloc as _;
 use esp_backtrace as _;
 use esp_hal as hal;
 use esp_println::logger::init_logger;
@@ -25,15 +25,13 @@ use esp_wifi::{
 };
 
 use hal::{
-    clock::ClockControl,
     gpio::Io,
     i2c::I2C,
-    peripherals::{Peripherals, I2C0, UART2},
+    peripherals::{I2C0, UART2},
     prelude::*,
     rng::Rng,
-    system::SystemControl,
     timer::timg::TimerGroup,
-    uart::{TxRxPins, Uart},
+    uart::Uart,
     Async,
 };
 
@@ -52,6 +50,10 @@ use sds011::Sds011;
 const READ_BUF_SIZE: usize = 10;
 const AT_CMD: u8 = 0xAB;
 const TOTAL_DATA_POINTS: usize = get_total_data_points();
+
+// TODO: find a better way to set data points through data model
+const SDS011_DATA_POINT: usize = 2;
+const BME280_DATA_POINT: usize = 3;
 
 #[toml_cfg::toml_config]
 pub struct Config {
@@ -83,39 +85,46 @@ pub struct Sensors<I2C, S, D> {
     sds011: Option<Sds011<S>>,
 }
 
+macro_rules! mk_static {
+    ($t:ty,$val:expr) => {{
+        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
+        #[deny(unused_attributes)]
+        let x = STATIC_CELL.uninit().write(($val));
+        x
+    }};
+}
+
 #[main]
 async fn main(spawner: Spawner) {
     init_logger(log::LevelFilter::Info);
 
-    let peripherals = Peripherals::take();
-    let system = SystemControl::new(peripherals.SYSTEM);
+    let peripherals = esp_hal::init({
+        let mut hal_config = esp_hal::Config::default();
+        hal_config.cpu_clock = CpuClock::max();
+        hal_config
+    });
+
+    esp_alloc::heap_allocator!(72 * 1024);
+
+    let timg0 = TimerGroup::new(peripherals.TIMG0);
 
     let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
-
-    let clocks = ClockControl::max(system.clock_control).freeze();
     let delay = Delay;
-
-    let timer = TimerGroup::new(peripherals.TIMG1, &clocks, None).timer0;
-
-    let timer_group0 = TimerGroup::new_async(peripherals.TIMG0, &clocks);
-    esp_hal_embassy::init(&clocks, timer_group0);
-
-    // possibly high transient required at init
-    // https://github.com/esp-rs/esp-hal/issues/1626
-    Timer::after(Duration::from_millis(1000)).await;
 
     let init = esp_wifi::initialize(
         EspWifiInitFor::Wifi,
-        timer,
+        timg0.timer0,
         Rng::new(peripherals.RNG),
         peripherals.RADIO_CLK,
-        &clocks,
     )
     .unwrap();
 
     let wifi = peripherals.WIFI;
     let (wifi_interface, controller) =
         esp_wifi::wifi::new_with_mode(&init, wifi, WifiStaDevice).unwrap();
+
+    let timg1 = TimerGroup::new(peripherals.TIMG1);
+    esp_hal_embassy::init(timg1.timer0);
 
     let mut sensors = Sensors {
         bme280: None,
@@ -128,13 +137,12 @@ async fn main(spawner: Spawner) {
             io.pins.gpio21,
             io.pins.gpio22,
             100u32.kHz(),
-            &clocks,
         );
         sensors.bme280 = Some(Bme280::new(i2c, delay).await.unwrap());
     }
 
     if cfg!(feature = "sds011") {
-        let pins = TxRxPins::new_tx_rx(io.pins.gpio17, io.pins.gpio16);
+        let (uart_tx_pin, uart_rx_pin) = (io.pins.gpio17, io.pins.gpio16);
 
         let uart_config = esp_hal::uart::config::Config {
             baudrate: 9600,
@@ -143,31 +151,37 @@ async fn main(spawner: Spawner) {
             stop_bits: esp_hal::uart::config::StopBits::STOP1,
             ..esp_hal::uart::config::Config::default()
         };
+        uart_config.rx_fifo_full_threshold(READ_BUF_SIZE as u16);
 
         let mut uart =
-            Uart::new_async_with_config(peripherals.UART2, uart_config, Some(pins), &clocks);
+            Uart::new_async_with_config(peripherals.UART2, uart_config, uart_tx_pin, uart_rx_pin)
+                .unwrap();
         uart.set_at_cmd(esp_hal::uart::config::AtCmdConfig::new(
             None, None, None, AT_CMD, None,
         ));
-        uart.set_rx_fifo_full_threshold(READ_BUF_SIZE as u16)
-            .unwrap();
+
         sensors.sds011 = Some(Sds011::new(uart).await.unwrap());
     }
+
+    info!("Config: {:?} {:?}", CONFIG.wifi_ssid, CONFIG.hostname);
 
     // initialize network stack
     let mut dhcp_config = embassy_net::DhcpConfig::default();
     dhcp_config.hostname = Some(String::<32>::from_str(CONFIG.hostname).unwrap());
-    let config = embassy_net::Config::dhcpv4(dhcp_config);
 
     let seed = 1234; // very random, very secure seed
 
     // Init network stack
-    let stack = &*make_static!(Stack::new(
-        wifi_interface,
-        config,
-        make_static!(StackResources::<3>::new()),
-        seed
-    ));
+    // TODO: replace with static_cell::make_static
+    let stack = &*mk_static!(
+        Stack<WifiDevice<'_, WifiStaDevice>>,
+        Stack::new(
+            wifi_interface,
+            embassy_net::Config::dhcpv4(dhcp_config),
+            mk_static!(StackResources<3>, StackResources::<3>::new()),
+            seed
+        )
+    );
 
     spawner.spawn(connection(controller)).ok();
     spawner.spawn(net_task(stack)).ok();
@@ -239,11 +253,10 @@ async fn measure(
         Timer::after(Duration::from_millis(500)).await;
     }
 
+    let mut args: [(&'static str, f32); TOTAL_DATA_POINTS] = [("", 0.0); TOTAL_DATA_POINTS];
+
     loop {
-        let mut args: [(&'static str, f32); TOTAL_DATA_POINTS] = [("", 0.0); TOTAL_DATA_POINTS];
-
         let mut index = 0;
-
         if cfg!(feature = "bme280") {
             if let Some(ref mut bme280) = sensors.bme280 {
                 match bme280.measure().await {
@@ -403,13 +416,15 @@ fn format_mqtt_message(args: &[(&str, f32)]) -> Result<String<256>, Error> {
 }
 
 const fn get_total_data_points() -> usize {
-    if cfg!(feature = "bme280") && cfg!(feature = "sds011") {
-        5
-    } else if cfg!(feature = "bme280") {
-        3
-    } else if cfg!(feature = "sds011") {
-        2
-    } else {
-        0
+    let mut datapoints: usize = 0;
+
+    if cfg!(feature = "bme280") {
+        datapoints += BME280_DATA_POINT;
     }
+
+    if cfg!(feature = "sds011") {
+        datapoints += SDS011_DATA_POINT
+    }
+
+    datapoints
 }

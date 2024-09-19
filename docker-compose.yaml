@@ -1,6 +1,6 @@
 services:
   influxdb:
-    image: influxdb:2.5.1
+    image: influxdb:2.7.10
     restart: always
     ports:
       - "8086:8086"
@@ -16,7 +16,7 @@ services:
 
   # generate Telegraf user in InfluxDB
   telegraf-credentials:
-    image: influxdb:2.5.1
+    image: influxdb:2.7.10
     command: /scripts/telegraf-init.sh
     env_file: ./infra/influxdb.env
     working_dir: /scripts
@@ -42,8 +42,10 @@ services:
     command:
       - -c
       - |
-        cp /etc/mosquitto/mqtt.auth /etc/mosquitto/password_file &&
-        mosquitto_passwd -U /etc/mosquitto/password_file &&
+        cp /etc/mosquitto/mqtt.auth /etc/mosquitto/password_file
+        chmod 0700 /etc/mosquitto/password_file
+        chown mosquitto: /etc/mosquitto/password_file
+        mosquitto_passwd -U /etc/mosquitto/password_file
         /docker-entrypoint.sh /usr/sbin/mosquitto -c /mosquitto/config/mosquitto.conf
     depends_on:
       telegraf-credentials:
@@ -55,7 +57,7 @@ services:
       - ./infra/mqtt.auth:/etc/mosquitto/mqtt.auth:ro
 
   telegraf:
-    image: telegraf:1.24-alpine
+    image: telegraf:1.30-alpine
     restart: always
     env_file: ./infra/telegraf.env
     networks:
