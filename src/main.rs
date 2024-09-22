@@ -106,9 +106,9 @@ async fn main(spawner: Spawner) {
     esp_alloc::heap_allocator!(72 * 1024);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
+    let timg1 = TimerGroup::new(peripherals.TIMG1);
 
-    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
-    let delay = Delay;
+    esp_hal_embassy::init(timg1.timer0);
 
     // possibly high transient required at init
     // https://github.com/esp-rs/esp-hal/issues/1626
@@ -126,8 +126,8 @@ async fn main(spawner: Spawner) {
     let (wifi_interface, controller) =
         esp_wifi::wifi::new_with_mode(&init, wifi, WifiStaDevice).unwrap();
 
-    let timg1 = TimerGroup::new(peripherals.TIMG1);
-    esp_hal_embassy::init(timg1.timer0);
+    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
+    let delay = Delay;
 
     let mut sensors = Sensors {
         bme280: None,

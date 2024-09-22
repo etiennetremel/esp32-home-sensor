@@ -47,6 +47,7 @@ esp-wifi = { version = "0.9.1", default-features = false, features = [
   "wifi",
 ] }
 
+# temporary fix for Access to the floating point coprocessor is not allowed
 xtensa-lx-rt = { rev = "5ae76d727e9f42f8ef992d0e57784702ff1f2872", git = "https://github.com/esp-rs/esp-hal", features = [
   "float-save-restore",
 ] }
@@ -54,10 +55,10 @@ xtensa-lx-rt = { rev = "5ae76d727e9f42f8ef992d0e57784702ff1f2872", git = "https:
 # temporary fix
 heapless = { version = "0.8.0", default-features = false }
 log = "0.4.22"
-rust-mqtt = { version = "0.3.0", default-features = false, features = [] }
-toml-cfg = "0.2.0"
-static_cell = { version = "2.1.0", features = ["nightly"] }
 rand_core = "0.6"
+rust-mqtt = { version = "0.3.0", default-features = false, features = [] }
+static_cell = { version = "2.1.0", features = ["nightly"] }
+toml-cfg = "0.2.0"
 
 [patch.crates-io]
 esp-hal = { rev = "5ae76d727e9f42f8ef992d0e57784702ff1f2872", git = "https://github.com/esp-rs/esp-hal" }
@@ -65,12 +66,25 @@ esp-wifi = { rev = "5ae76d727e9f42f8ef992d0e57784702ff1f2872", git = "https://gi
 esp-hal-embassy = { rev = "5ae76d727e9f42f8ef992d0e57784702ff1f2872", git = "https://github.com/esp-rs/esp-hal" }
 esp-alloc = { rev = "5ae76d727e9f42f8ef992d0e57784702ff1f2872", git = "https://github.com/esp-rs/esp-hal" }
 
+[profile.dev]
+opt-level = "s"
+
+[profile.dev.package.esp-hal]
+debug-assertions = false
+opt-level = 3
+
+[profile.dev.package.esp-wifi]
+opt-level = 3
+
+[profile.dev.package.xtensa-lx-rt]
+opt-level = 'z'
+
 [profile.release]
 codegen-units = 1        # LLVM can perform better optimizations using a single thread
 debug = 2
 debug-assertions = false
 incremental = false
-opt-level = 3
+opt-level = "s"
 lto = 'fat'
 overflow-checks = false
 
