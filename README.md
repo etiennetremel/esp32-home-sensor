@@ -75,7 +75,7 @@ Connect the device via USB, then run the following command to run flash and
 retrieve logs from the device using espmonitor:
 
 ```bash
-espup update
+espup install
 
 . $HOME/export-esp.sh
 

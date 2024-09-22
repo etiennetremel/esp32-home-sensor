@@ -682,6 +682,7 @@ dependencies = [
  "esp-wifi",
  "heapless",
  "log",
+ "rand_core",
  "rust-mqtt",
  "sds011-nostd-rs",
  "static_cell",

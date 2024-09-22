@@ -7,6 +7,8 @@ use core::fmt::{Error, Write};
 use core::str::FromStr;
 use heapless::String;
 use log::info;
+use rand_core::RngCore;
+use static_cell::StaticCell;
 
 use embassy_executor::Spawner;
 use embassy_net::{dns::DnsQueryType, tcp::TcpSocket, Stack, StackResources};
@@ -49,11 +51,15 @@ use sds011::Sds011;
 
 const READ_BUF_SIZE: usize = 10;
 const AT_CMD: u8 = 0xAB;
-const TOTAL_DATA_POINTS: usize = get_total_data_points();
 
 // TODO: find a better way to set data points through data model
 const SDS011_DATA_POINT: usize = 2;
 const BME280_DATA_POINT: usize = 3;
+const TOTAL_DATA_POINTS: usize = get_total_data_points();
+
+// Network stack and resources
+static RESOURCES: StaticCell<StackResources<4>> = StaticCell::new();
+static STACK: StaticCell<Stack<WifiDevice<'_, WifiStaDevice>>> = StaticCell::new();
 
 #[toml_cfg::toml_config]
 pub struct Config {
@@ -85,15 +91,6 @@ pub struct Sensors<I2C, S, D> {
     sds011: Option<Sds011<S>>,
 }
 
-macro_rules! mk_static {
-    ($t:ty,$val:expr) => {{
-        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
-        #[deny(unused_attributes)]
-        let x = STATIC_CELL.uninit().write(($val));
-        x
-    }};
-}
-
 #[main]
 async fn main(spawner: Spawner) {
     init_logger(log::LevelFilter::Info);
@@ -104,6 +101,8 @@ async fn main(spawner: Spawner) {
         hal_config
     });
 
+    let mut rng = Rng::new(peripherals.RNG);
+
     esp_alloc::heap_allocator!(72 * 1024);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
@@ -111,10 +110,14 @@ async fn main(spawner: Spawner) {
     let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
     let delay = Delay;
 
+    // possibly high transient required at init
+    // https://github.com/esp-rs/esp-hal/issues/1626
+    Timer::after(Duration::from_millis(1000)).await;
+
     let init = esp_wifi::initialize(
         EspWifiInitFor::Wifi,
         timg0.timer0,
-        Rng::new(peripherals.RNG),
+        rng,
         peripherals.RADIO_CLK,
     )
     .unwrap();
@@ -169,19 +172,11 @@ async fn main(spawner: Spawner) {
     let mut dhcp_config = embassy_net::DhcpConfig::default();
     dhcp_config.hostname = Some(String::<32>::from_str(CONFIG.hostname).unwrap());
 
-    let seed = 1234; // very random, very secure seed
+    let seed = rng.next_u32();
+    let config = embassy_net::Config::dhcpv4(dhcp_config);
 
-    // Init network stack
-    // TODO: replace with static_cell::make_static
-    let stack = &*mk_static!(
-        Stack<WifiDevice<'_, WifiStaDevice>>,
-        Stack::new(
-            wifi_interface,
-            embassy_net::Config::dhcpv4(dhcp_config),
-            mk_static!(StackResources<3>, StackResources::<3>::new()),
-            seed
-        )
-    );
+    let resources = RESOURCES.init(StackResources::new());
+    let stack = STACK.init(Stack::new(wifi_interface, config, resources, seed.into()));
 
     spawner.spawn(connection(controller)).ok();
     spawner.spawn(net_task(stack)).ok();
