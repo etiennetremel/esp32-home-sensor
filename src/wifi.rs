@@ -27,6 +27,9 @@ pub struct Wifi {
     pub stack: &'static Stack<WifiDevice<'static, WifiStaDevice>>,
 }
 
+#[derive(Debug)]
+pub enum Error {}
+
 impl Wifi {
     pub async fn new(
         wifi: peripherals::WIFI,
@@ -35,7 +38,7 @@ impl Wifi {
         mut rng: Rng,
         spawner: Spawner,
     ) -> Result<Self, Error> {
-        let init = esp_wifi::initialize(EspWifiInitFor::Wifi, timer, rng, radio_clocks).unwrap();
+        let init = esp_wifi::init(EspWifiInitFor::Wifi, timer, rng, radio_clocks).unwrap();
 
         let (wifi_interface, controller) =
             esp_wifi::wifi::new_with_mode(&init, wifi, WifiStaDevice).unwrap();
@@ -92,7 +95,7 @@ async fn connection(mut controller: WifiController<'static>) {
         }
 
         if !matches!(controller.is_started(), Ok(true)) {
-            info!("Conencting to wifi with ssid: {:?}", CONFIG.wifi_ssid);
+            info!("Connecting to wifi with SSID: {:?}", CONFIG.wifi_ssid);
             let client_config = Configuration::Client(ClientConfiguration {
                 ssid: CONFIG.wifi_ssid.try_into().unwrap(),
                 password: CONFIG.wifi_psk.try_into().unwrap(),

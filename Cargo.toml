@@ -8,6 +8,7 @@ license = "MIT"
 [dependencies]
 sds011-nostd-rs = { rev = "010353fc33be4607c45fe8c0df6fce9101e12831", git = "https://github.com/etiennetremel/sds011-nostd-rs.git" }
 bme280-rs = "0.3.0"
+libscd = { version = "0.3.1", features = ["scd30", "async", "defmt"] }
 
 embassy-executor = { version = "0.6.0", package = "embassy-executor", features = [
   "executor-thread",
@@ -21,50 +22,39 @@ embassy-net = { version = "0.4.0", features = [
   "dns",
   "medium-ethernet",
 ] }
+embassy-sync = "0.6.0"
 embassy-time = { version = "0.3.2", features = ["generic-queue-8"] }
 
 embedded-io-async = "0.6.1"
 embedded-hal-async = "1.0.0"
+embassy-embedded-hal = "0.2.0"
 
-esp-alloc = "0.4.0"
-esp-backtrace = { version = "0.14.1", features = [
+esp-alloc = "0.5.0"
+esp-backtrace = { version = "0.14.2", features = [
   "esp32",
   "panic-handler",
   "println",
 ] }
-esp-hal = { version = "0.20.1", features = ["esp32"] }
-esp-hal-embassy = { version = "0.3.0" }
-esp-println = { version = "0.11.0", features = ["esp32", "log"] }
-esp-wifi = { version = "0.9.1", default-features = false, features = [
+esp-hal = { version = "0.21.0", features = ["esp32"] }
+esp-hal-embassy = { version = "0.4.0", features = ["esp32"] }
+esp-println = { version = "0.12.0", features = ["esp32", "log"] }
+esp-wifi = { version = "0.10.1", default-features = false, features = [
   "async",
   "dhcpv4",
   "dns",
   "embassy-net",
-  "embedded-svc",
-  "esp-alloc",
   "esp32",
   "tcp",
   "wifi",
+  "esp-alloc",
 ] }
 
-# temporary fix for Access to the floating point coprocessor is not allowed
-xtensa-lx-rt = { rev = "5ae76d727e9f42f8ef992d0e57784702ff1f2872", git = "https://github.com/esp-rs/esp-hal", features = [
-  "float-save-restore",
-] }
-
-# temporary fix
 heapless = { version = "0.8.0", default-features = false }
 log = "0.4.22"
 rand_core = "0.6"
 rust-mqtt = { version = "0.3.0", default-features = false, features = [] }
 static_cell = { version = "2.1.0", features = ["nightly"] }
 toml-cfg = "0.2.0"
-
-[patch.crates-io]
-esp-hal = { rev = "5ae76d727e9f42f8ef992d0e57784702ff1f2872", git = "https://github.com/esp-rs/esp-hal" }
-esp-wifi = { rev = "5ae76d727e9f42f8ef992d0e57784702ff1f2872", git = "https://github.com/esp-rs/esp-hal" }
-esp-hal-embassy = { rev = "5ae76d727e9f42f8ef992d0e57784702ff1f2872", git = "https://github.com/esp-rs/esp-hal" }
-esp-alloc = { rev = "5ae76d727e9f42f8ef992d0e57784702ff1f2872", git = "https://github.com/esp-rs/esp-hal" }
 
 [profile.dev]
 opt-level = "s"
@@ -93,5 +83,6 @@ overflow-checks = false
 default = []
 influx = []
 json = []
-sds011 = []
 bme280 = []
+scd30 = []
+sds011 = []

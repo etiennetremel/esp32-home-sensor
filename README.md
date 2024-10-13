@@ -45,10 +45,16 @@ flowchart LR
 | BME280 | SCL         | GPIO 22 / D22       |
 | BME280 | GND         | GND                 |
 | BME280 | 3.3v        | 3v3                 |
+| SCD30  | SDA         | GPIO 21 / D21       |
+| SCD30  | SCL         | GPIO 22 / D22       |
+| SCD30  | GND         | GND                 |
+| SCD30  | 3.3v        | 3v3                 |
 | SDS011 | RX          | GPIO 17 / U2:TXD    |
 | SDS011 | TX          | GPIO 16 / U2:RXD    |
 | SDS011 | GND         | GND                 |
 | SDS011 | 5v          | 3v3                 |
+
+Note: I2C devices share the same I2C bus (BME280, SCD30).
 
 #### Configuration
 

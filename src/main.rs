@@ -6,10 +6,15 @@
 use core::fmt::{Error, Write};
 use heapless::String;
 use log::info;
+use static_cell::StaticCell;
 
+use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_executor::Spawner;
 use embassy_net::{dns::DnsQueryType, tcp::TcpSocket, Stack};
-use embassy_time::{Delay, Duration, Timer};
+use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
+use embassy_time::{Duration, Timer};
+
+extern crate alloc;
 
 use esp_alloc as _;
 use esp_backtrace as _;
@@ -19,7 +24,7 @@ use esp_wifi::wifi::{WifiDevice, WifiStaDevice};
 
 use hal::{
     gpio::Io,
-    i2c::I2C,
+    i2c::I2c,
     peripherals::{I2C0, UART2},
     prelude::*,
     rng::Rng,
@@ -39,10 +44,12 @@ pub mod config;
 use config::CONFIG;
 
 mod bme280;
+mod scd30;
 mod sds011;
 mod wifi;
 
 use bme280::Bme280;
+use scd30::Scd30;
 use sds011::Sds011;
 use wifi::Wifi;
 
@@ -51,23 +58,23 @@ const AT_CMD: u8 = 0xAB;
 
 // TODO: find a better way to set data points through data model
 const SDS011_DATA_POINT: usize = 2;
+const SCD30_DATA_POINT: usize = 3;
 const BME280_DATA_POINT: usize = 3;
 const TOTAL_DATA_POINTS: usize = get_total_data_points();
 
-pub struct Sensors<I2C, S, D> {
-    bme280: Option<Bme280<I2C, D>>,
+static I2C_BUS: StaticCell<Mutex<NoopRawMutex, I2c<'_, I2C0, Async>>> = StaticCell::new();
+
+pub struct Sensors<I2C, S> {
+    bme280: Option<Bme280<I2C>>,
     sds011: Option<Sds011<S>>,
+    scd30: Option<Scd30<I2C>>,
 }
 
 #[main]
 async fn main(spawner: Spawner) {
     init_logger(log::LevelFilter::Info);
 
-    let peripherals = esp_hal::init({
-        let mut hal_config = esp_hal::Config::default();
-        hal_config.cpu_clock = CpuClock::max();
-        hal_config
-    });
+    let peripherals = esp_hal::init(esp_hal::Config::default());
 
     let rng = Rng::new(peripherals.RNG);
 
@@ -83,21 +90,26 @@ async fn main(spawner: Spawner) {
     Timer::after(Duration::from_millis(1000)).await;
 
     let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
-    let delay = Delay;
 
     let mut sensors = Sensors {
         bme280: None,
         sds011: None,
+        scd30: None,
     };
 
-    if cfg!(feature = "bme280") {
-        let i2c = I2C::new_async(
-            peripherals.I2C0,
-            io.pins.gpio21,
-            io.pins.gpio22,
-            100u32.kHz(),
-        );
-        sensors.bme280 = Some(Bme280::new(i2c, delay).await.unwrap());
+    if cfg!(feature = "bme280") || cfg!(feature = "scd30") {
+        let (sda, scl) = (io.pins.gpio21, io.pins.gpio22);
+
+        let i2c = I2c::new_async(peripherals.I2C0, sda, scl, 100u32.kHz());
+        let i2c_bus = I2C_BUS.init(Mutex::new(i2c));
+
+        if cfg!(feature = "bme280") {
+            sensors.bme280 = Some(Bme280::new(I2cDevice::new(i2c_bus)).await.unwrap());
+        }
+
+        if cfg!(feature = "scd30") {
+            sensors.scd30 = Some(Scd30::new(I2cDevice::new(i2c_bus)).await.unwrap());
+        }
     }
 
     if cfg!(feature = "sds011") {
@@ -140,7 +152,10 @@ async fn main(spawner: Spawner) {
 #[embassy_executor::task]
 async fn measure(
     stack: &'static Stack<WifiDevice<'static, WifiStaDevice>>,
-    mut sensors: Sensors<I2C<'static, I2C0, Async>, Uart<'static, UART2, Async>, Delay>,
+    mut sensors: Sensors<
+        I2cDevice<'static, NoopRawMutex, I2c<'static, I2C0, Async>>,
+        Uart<'static, UART2, Async>,
+    >,
 ) {
     let mut rx_buffer = [0; 4096];
     let mut tx_buffer = [0; 4096];
@@ -169,6 +184,31 @@ async fn measure(
             } else {
                 // Handle the case where bme280 is None if necessary
                 info!("BME280 sensor is not available");
+                Timer::after(Duration::from_secs(10)).await;
+                continue;
+            }
+        };
+
+        if cfg!(feature = "scd30") {
+            if let Some(ref mut scd30) = sensors.scd30 {
+                match scd30.measure().await {
+                    Ok(measurement) => {
+                        args[index] = ("temperature", measurement.temperature);
+                        index += 1;
+                        args[index] = ("humidity", measurement.humidity);
+                        index += 1;
+                        args[index] = ("co2", measurement.co2);
+                        index += 1;
+                    }
+                    Err(e) => {
+                        info!("Error taking SCD30 measurement: {:?}", e);
+                        Timer::after(Duration::from_secs(10)).await;
+                        continue;
+                    }
+                }
+            } else {
+                // Handle the case where scd30 is None if necessary
+                info!("SCD30 sensor is not available");
                 Timer::after(Duration::from_secs(10)).await;
                 continue;
             }
@@ -276,7 +316,10 @@ async fn measure(
             "Message published, waiting {:?} seconds",
             CONFIG.measurement_interval_seconds
         );
-        Timer::after(Duration::from_secs(CONFIG.measurement_interval_seconds)).await;
+        Timer::after(Duration::from_secs(
+            CONFIG.measurement_interval_seconds.into(),
+        ))
+        .await;
     }
 }
 
@@ -312,6 +355,10 @@ const fn get_total_data_points() -> usize {
 
     if cfg!(feature = "bme280") {
         datapoints += BME280_DATA_POINT;
+    }
+
+    if cfg!(feature = "scd30") {
+        datapoints += SCD30_DATA_POINT
     }
 
     if cfg!(feature = "sds011") {

@@ -29,5 +29,5 @@ pub struct Config {
     mqtt_topic: &'static str,
 
     #[default(60)]
-    measurement_interval_seconds: u64,
+    measurement_interval_seconds: u16,
 }
