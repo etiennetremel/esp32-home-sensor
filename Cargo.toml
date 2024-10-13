@@ -6,38 +6,83 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
-sds011-nostd-rs = { rev ="010353fc33be4607c45fe8c0df6fce9101e12831", git = "https://github.com/etiennetremel/sds011-nostd-rs.git" }
-bme280-rs = "0.2.0"
+sds011-nostd-rs = { rev = "010353fc33be4607c45fe8c0df6fce9101e12831", git = "https://github.com/etiennetremel/sds011-nostd-rs.git" }
+bme280-rs = "0.3.0"
+libscd = { version = "0.3.1", features = ["scd30", "async", "defmt"] }
 
-embassy-executor = { version = "0.5.0", package = "embassy-executor", features = [ "executor-thread", "integrated-timers", "task-arena-size-24576", ] }
-embassy-net = { version = "0.4.0", features = [ "tcp", "udp", "dhcpv4", "dhcpv4-hostname", "dns", "medium-ethernet" ] }
-embassy-time = { version = "0.3.1" }
+embassy-executor = { version = "0.6.0", package = "embassy-executor", features = [
+  "executor-thread",
+  "task-arena-size-24576",
+] }
+embassy-net = { version = "0.4.0", features = [
+  "tcp",
+  "udp",
+  "dhcpv4",
+  "dhcpv4-hostname",
+  "dns",
+  "medium-ethernet",
+] }
+embassy-sync = "0.6.0"
+embassy-time = { version = "0.3.2", features = ["generic-queue-8"] }
 
 embedded-io-async = "0.6.1"
 embedded-hal-async = "1.0.0"
+embassy-embedded-hal = "0.2.0"
 
-esp-backtrace = { version = "0.12.0", features = ["esp32", "panic-handler", "println"] }
-esp-hal = { version = "0.18.0", features = [ "esp32"] }
-esp-hal-embassy = { version = "0.1.0", features = [ "time-timg0"] }
-esp-println = { version = "0.9.1", features = [ "esp32", "log", "uart" ] }
-esp-wifi = { version = "0.6.0", default-features = false, features = [ "async",
-  "dhcpv4", "dns", "embassy-net", "embedded-svc", "esp32", "tcp", "wifi" ] }
+esp-alloc = "0.5.0"
+esp-backtrace = { version = "0.14.2", features = [
+  "esp32",
+  "panic-handler",
+  "println",
+] }
+esp-hal = { version = "0.21.0", features = ["esp32"] }
+esp-hal-embassy = { version = "0.4.0", features = ["esp32"] }
+esp-println = { version = "0.12.0", features = ["esp32", "log"] }
+esp-wifi = { version = "0.10.1", default-features = false, features = [
+  "async",
+  "dhcpv4",
+  "dns",
+  "embassy-net",
+  "esp32",
+  "tcp",
+  "wifi",
+  "esp-alloc",
+] }
 
 heapless = { version = "0.8.0", default-features = false }
-log = "0.4.21"
-rust-mqtt = { version = "0.3.0", default-features = false, features = []}
-toml-cfg = "0.2.0"
+log = "0.4.22"
+rand_core = "0.6"
+rust-mqtt = { version = "0.3.0", default-features = false, features = [] }
 static_cell = { version = "2.1.0", features = ["nightly"] }
+toml-cfg = "0.2.0"
+
+[profile.dev]
+opt-level = "s"
+
+[profile.dev.package.esp-hal]
+debug-assertions = false
+opt-level = 3
+
+[profile.dev.package.esp-wifi]
+opt-level = 3
+
+[profile.dev.package.xtensa-lx-rt]
+opt-level = 'z'
 
 [profile.release]
+codegen-units = 1        # LLVM can perform better optimizations using a single thread
+debug = 2
+debug-assertions = false
 incremental = false
-opt-level = 3
+opt-level = "s"
 lto = 'fat'
 overflow-checks = false
 
 [features]
-default = ["json", "bme280", "sds011"]
+# default = ["json", "bme280", "sds011"]
+default = []
 influx = []
 json = []
-sds011 = []
 bme280 = []
+scd30 = []
+sds011 = []

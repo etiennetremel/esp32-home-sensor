@@ -4,36 +4,32 @@
 #![feature(type_alias_impl_trait)]
 
 use core::fmt::{Error, Write};
-use core::str::FromStr;
 use heapless::String;
 use log::info;
-use static_cell::make_static;
+use static_cell::StaticCell;
 
+use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_executor::Spawner;
-use embassy_net::{dns::DnsQueryType, tcp::TcpSocket, Stack, StackResources};
-use embassy_time::{Delay, Duration, Timer};
+use embassy_net::{dns::DnsQueryType, tcp::TcpSocket, Stack};
+use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
+use embassy_time::{Duration, Timer};
 
+extern crate alloc;
+
+use esp_alloc as _;
 use esp_backtrace as _;
 use esp_hal as hal;
 use esp_println::logger::init_logger;
-use esp_wifi::{
-    wifi::{
-        ClientConfiguration, Configuration, WifiController, WifiDevice, WifiEvent, WifiStaDevice,
-        WifiState,
-    },
-    EspWifiInitFor,
-};
+use esp_wifi::wifi::{WifiDevice, WifiStaDevice};
 
 use hal::{
-    clock::ClockControl,
     gpio::Io,
-    i2c::I2C,
-    peripherals::{Peripherals, I2C0, UART2},
+    i2c::I2c,
+    peripherals::{I2C0, UART2},
     prelude::*,
     rng::Rng,
-    system::SystemControl,
     timer::timg::TimerGroup,
-    uart::{TxRxPins, Uart},
+    uart::Uart,
     Async,
 };
 
@@ -43,98 +39,81 @@ use rust_mqtt::{
     utils::rng_generator::CountingRng,
 };
 
+pub mod config;
+
+use config::CONFIG;
+
 mod bme280;
+mod scd30;
 mod sds011;
+mod wifi;
 
 use bme280::Bme280;
+use scd30::Scd30;
 use sds011::Sds011;
+use wifi::Wifi;
 
 const READ_BUF_SIZE: usize = 10;
 const AT_CMD: u8 = 0xAB;
+
+// TODO: find a better way to set data points through data model
+const SDS011_DATA_POINT: usize = 2;
+const SCD30_DATA_POINT: usize = 3;
+const BME280_DATA_POINT: usize = 3;
 const TOTAL_DATA_POINTS: usize = get_total_data_points();
 
-#[toml_cfg::toml_config]
-pub struct Config {
-    #[default("")]
-    wifi_ssid: &'static str,
-    #[default("")]
-    wifi_psk: &'static str,
-    // smoltcp currently doesn't have a way of giving a hostname through DHCP
-    #[default("esp32")]
-    hostname: &'static str,
-    #[default("")]
-    location: &'static str,
-    #[default("")]
-    mqtt_hostname: &'static str,
-    #[default(1883)]
-    mqtt_port: u16,
-    #[default("")]
-    mqtt_username: &'static str,
-    #[default("")]
-    mqtt_password: &'static str,
-    #[default("sensor")]
-    mqtt_topic: &'static str,
-    #[default(60)]
-    measurement_interval_seconds: u64,
-}
+static I2C_BUS: StaticCell<Mutex<NoopRawMutex, I2c<'_, I2C0, Async>>> = StaticCell::new();
 
-pub struct Sensors<I2C, S, D> {
-    bme280: Option<Bme280<I2C, D>>,
+pub struct Sensors<I2C, S> {
+    bme280: Option<Bme280<I2C>>,
     sds011: Option<Sds011<S>>,
+    scd30: Option<Scd30<I2C>>,
 }
 
 #[main]
 async fn main(spawner: Spawner) {
     init_logger(log::LevelFilter::Info);
 
-    let peripherals = Peripherals::take();
-    let system = SystemControl::new(peripherals.SYSTEM);
+    let peripherals = esp_hal::init(esp_hal::Config::default());
 
-    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
+    let rng = Rng::new(peripherals.RNG);
 
-    let clocks = ClockControl::max(system.clock_control).freeze();
-    let delay = Delay;
+    esp_alloc::heap_allocator!(72 * 1024);
 
-    let timer = TimerGroup::new(peripherals.TIMG1, &clocks, None).timer0;
+    let timg0 = TimerGroup::new(peripherals.TIMG0);
+    let timg1 = TimerGroup::new(peripherals.TIMG1);
 
-    let timer_group0 = TimerGroup::new_async(peripherals.TIMG0, &clocks);
-    esp_hal_embassy::init(&clocks, timer_group0);
+    esp_hal_embassy::init(timg0.timer0);
 
     // possibly high transient required at init
     // https://github.com/esp-rs/esp-hal/issues/1626
     Timer::after(Duration::from_millis(1000)).await;
 
-    let init = esp_wifi::initialize(
-        EspWifiInitFor::Wifi,
-        timer,
-        Rng::new(peripherals.RNG),
-        peripherals.RADIO_CLK,
-        &clocks,
-    )
-    .unwrap();
-
-    let wifi = peripherals.WIFI;
-    let (wifi_interface, controller) =
-        esp_wifi::wifi::new_with_mode(&init, wifi, WifiStaDevice).unwrap();
+    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
 
     let mut sensors = Sensors {
         bme280: None,
         sds011: None,
+        scd30: None,
     };
 
-    if cfg!(feature = "bme280") {
-        let i2c = I2C::new_async(
-            peripherals.I2C0,
-            io.pins.gpio21,
-            io.pins.gpio22,
-            100u32.kHz(),
-            &clocks,
-        );
-        sensors.bme280 = Some(Bme280::new(i2c, delay).await.unwrap());
+    if cfg!(feature = "bme280") || cfg!(feature = "scd30") {
+        let (sda, scl) = (io.pins.gpio21, io.pins.gpio22);
+
+        let i2c = I2c::new_async(peripherals.I2C0, sda, scl, 100u32.kHz());
+        let i2c_bus = I2C_BUS.init(Mutex::new(i2c));
+
+        if cfg!(feature = "bme280") {
+            sensors.bme280 = Some(Bme280::new(I2cDevice::new(i2c_bus)).await.unwrap());
+        }
+
+        if cfg!(feature = "scd30") {
+            sensors.scd30 = Some(Scd30::new(I2cDevice::new(i2c_bus)).await.unwrap());
+        }
     }
 
     if cfg!(feature = "sds011") {
-        let pins = TxRxPins::new_tx_rx(io.pins.gpio17, io.pins.gpio16);
+        let (uart_tx_pin, uart_rx_pin) = (io.pins.gpio17, io.pins.gpio16);
 
         let uart_config = esp_hal::uart::config::Config {
             baudrate: 9600,
@@ -143,107 +122,48 @@ async fn main(spawner: Spawner) {
             stop_bits: esp_hal::uart::config::StopBits::STOP1,
             ..esp_hal::uart::config::Config::default()
         };
+        uart_config.rx_fifo_full_threshold(READ_BUF_SIZE as u16);
 
         let mut uart =
-            Uart::new_async_with_config(peripherals.UART2, uart_config, Some(pins), &clocks);
+            Uart::new_async_with_config(peripherals.UART2, uart_config, uart_tx_pin, uart_rx_pin)
+                .unwrap();
         uart.set_at_cmd(esp_hal::uart::config::AtCmdConfig::new(
             None, None, None, AT_CMD, None,
         ));
-        uart.set_rx_fifo_full_threshold(READ_BUF_SIZE as u16)
-            .unwrap();
+
         sensors.sds011 = Some(Sds011::new(uart).await.unwrap());
     }
 
-    // initialize network stack
-    let mut dhcp_config = embassy_net::DhcpConfig::default();
-    dhcp_config.hostname = Some(String::<32>::from_str(CONFIG.hostname).unwrap());
-    let config = embassy_net::Config::dhcpv4(dhcp_config);
+    let wifi = Wifi::new(
+        peripherals.WIFI,
+        timg1.timer0,
+        peripherals.RADIO_CLK,
+        rng,
+        spawner,
+    )
+    .await
+    .unwrap();
 
-    let seed = 1234; // very random, very secure seed
+    wifi.connect().await.unwrap();
 
-    // Init network stack
-    let stack = &*make_static!(Stack::new(
-        wifi_interface,
-        config,
-        make_static!(StackResources::<3>::new()),
-        seed
-    ));
-
-    spawner.spawn(connection(controller)).ok();
-    spawner.spawn(net_task(stack)).ok();
-    spawner.spawn(measure(stack, sensors)).ok();
-}
-
-#[embassy_executor::task]
-async fn connection(mut controller: WifiController<'static>) {
-    info!(
-        "Start connection task, device capabilities: {:?}",
-        controller.get_capabilities()
-    );
-    loop {
-        if esp_wifi::wifi::get_wifi_state() == WifiState::StaConnected {
-            // wait until we're no longer connected
-            controller.wait_for_event(WifiEvent::StaDisconnected).await;
-            Timer::after(Duration::from_millis(5000)).await
-        }
-
-        if !matches!(controller.is_started(), Ok(true)) {
-            let client_config = Configuration::Client(ClientConfiguration {
-                ssid: CONFIG.wifi_ssid.try_into().unwrap(),
-                password: CONFIG.wifi_psk.try_into().unwrap(),
-                ..Default::default()
-            });
-            controller.set_configuration(&client_config).unwrap();
-            info!("Starting wifi");
-            controller.start().await.unwrap();
-            info!("Wifi started!");
-        }
-
-        info!("About to connect to {:?}...", CONFIG.wifi_ssid);
-        match controller.connect().await {
-            Ok(_) => info!("Wifi connected!"),
-            Err(e) => {
-                info!("Failed to connect to wifi: {e:?}");
-                Timer::after(Duration::from_millis(5000)).await
-            }
-        }
-    }
-}
-
-#[embassy_executor::task]
-async fn net_task(stack: &'static Stack<WifiDevice<'static, WifiStaDevice>>) {
-    stack.run().await
+    spawner.spawn(measure(wifi.stack, sensors)).ok();
 }
 
 #[embassy_executor::task]
 async fn measure(
     stack: &'static Stack<WifiDevice<'static, WifiStaDevice>>,
-    mut sensors: Sensors<I2C<'static, I2C0, Async>, Uart<'static, UART2, Async>, Delay>,
+    mut sensors: Sensors<
+        I2cDevice<'static, NoopRawMutex, I2c<'static, I2C0, Async>>,
+        Uart<'static, UART2, Async>,
+    >,
 ) {
     let mut rx_buffer = [0; 4096];
     let mut tx_buffer = [0; 4096];
 
-    loop {
-        if stack.is_link_up() {
-            break;
-        }
-        Timer::after(Duration::from_millis(500)).await;
-    }
-
-    info!("Waiting to get IP address...");
-    loop {
-        if let Some(config) = stack.config_v4() {
-            info!("Got IP: {}", config.address);
-            break;
-        }
-        Timer::after(Duration::from_millis(500)).await;
-    }
+    let mut args: [(&'static str, f32); TOTAL_DATA_POINTS] = [("", 0.0); TOTAL_DATA_POINTS];
 
     loop {
-        let mut args: [(&'static str, f32); TOTAL_DATA_POINTS] = [("", 0.0); TOTAL_DATA_POINTS];
-
         let mut index = 0;
-
         if cfg!(feature = "bme280") {
             if let Some(ref mut bme280) = sensors.bme280 {
                 match bme280.measure().await {
@@ -264,6 +184,31 @@ async fn measure(
             } else {
                 // Handle the case where bme280 is None if necessary
                 info!("BME280 sensor is not available");
+                Timer::after(Duration::from_secs(10)).await;
+                continue;
+            }
+        };
+
+        if cfg!(feature = "scd30") {
+            if let Some(ref mut scd30) = sensors.scd30 {
+                match scd30.measure().await {
+                    Ok(measurement) => {
+                        args[index] = ("temperature", measurement.temperature);
+                        index += 1;
+                        args[index] = ("humidity", measurement.humidity);
+                        index += 1;
+                        args[index] = ("co2", measurement.co2);
+                        index += 1;
+                    }
+                    Err(e) => {
+                        info!("Error taking SCD30 measurement: {:?}", e);
+                        Timer::after(Duration::from_secs(10)).await;
+                        continue;
+                    }
+                }
+            } else {
+                // Handle the case where scd30 is None if necessary
+                info!("SCD30 sensor is not available");
                 Timer::after(Duration::from_secs(10)).await;
                 continue;
             }
@@ -371,7 +316,10 @@ async fn measure(
             "Message published, waiting {:?} seconds",
             CONFIG.measurement_interval_seconds
         );
-        Timer::after(Duration::from_secs(CONFIG.measurement_interval_seconds)).await;
+        Timer::after(Duration::from_secs(
+            CONFIG.measurement_interval_seconds.into(),
+        ))
+        .await;
     }
 }
 
@@ -403,13 +351,19 @@ fn format_mqtt_message(args: &[(&str, f32)]) -> Result<String<256>, Error> {
 }
 
 const fn get_total_data_points() -> usize {
-    if cfg!(feature = "bme280") && cfg!(feature = "sds011") {
-        5
-    } else if cfg!(feature = "bme280") {
-        3
-    } else if cfg!(feature = "sds011") {
-        2
-    } else {
-        0
+    let mut datapoints: usize = 0;
+
+    if cfg!(feature = "bme280") {
+        datapoints += BME280_DATA_POINT;
     }
+
+    if cfg!(feature = "scd30") {
+        datapoints += SCD30_DATA_POINT
+    }
+
+    if cfg!(feature = "sds011") {
+        datapoints += SDS011_DATA_POINT
+    }
+
+    datapoints
 }
