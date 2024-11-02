@@ -23,14 +23,8 @@ use esp_println::logger::init_logger;
 use esp_wifi::wifi::{WifiDevice, WifiStaDevice};
 
 use hal::{
-    gpio::Io,
-    i2c::I2c,
-    peripherals::{I2C0, UART2},
-    prelude::*,
-    rng::Rng,
-    timer::timg::TimerGroup,
-    uart::Uart,
-    Async,
+    gpio::Io, i2c::I2c, peripherals::I2C0, prelude::*, rng::Rng, timer::timg::TimerGroup,
+    uart::Uart, Async,
 };
 
 use rust_mqtt::{
@@ -40,35 +34,17 @@ use rust_mqtt::{
 };
 
 pub mod config;
-
-use config::CONFIG;
-
-mod bme280;
-mod scd30;
-mod sds011;
+pub mod sensors;
 mod wifi;
 
-use bme280::Bme280;
-use scd30::Scd30;
-use sds011::Sds011;
+use config::CONFIG;
+use sensors::{Sensor, SensorData, Sensors};
 use wifi::Wifi;
+
+static I2C_BUS: StaticCell<Mutex<NoopRawMutex, I2c<I2C0, Async>>> = StaticCell::new();
 
 const READ_BUF_SIZE: usize = 10;
 const AT_CMD: u8 = 0xAB;
-
-// TODO: find a better way to set data points through data model
-const SDS011_DATA_POINT: usize = 2;
-const SCD30_DATA_POINT: usize = 3;
-const BME280_DATA_POINT: usize = 3;
-const TOTAL_DATA_POINTS: usize = get_total_data_points();
-
-static I2C_BUS: StaticCell<Mutex<NoopRawMutex, I2c<'_, I2C0, Async>>> = StaticCell::new();
-
-pub struct Sensors<I2C, S> {
-    bme280: Option<Bme280<I2C>>,
-    sds011: Option<Sds011<S>>,
-    scd30: Option<Scd30<I2C>>,
-}
 
 #[main]
 async fn main(spawner: Spawner) {
@@ -91,47 +67,54 @@ async fn main(spawner: Spawner) {
 
     let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
 
-    let mut sensors = Sensors {
-        bme280: None,
-        sds011: None,
-        scd30: None,
-    };
+    let mut sensors = Sensors::new();
 
     if cfg!(feature = "bme280") || cfg!(feature = "scd30") {
         let (sda, scl) = (io.pins.gpio21, io.pins.gpio22);
 
-        let i2c = I2c::new_async(peripherals.I2C0, sda, scl, 100u32.kHz());
-        let i2c_bus = I2C_BUS.init(Mutex::new(i2c));
+        // Scd30 appear to require additional timeout for the i2c commands
+        let i2c_timeout = 20u32;
+
+        let i2c = I2c::new_with_timeout_async(
+            peripherals.I2C0,
+            sda,
+            scl,
+            100u32.kHz(),
+            Some(i2c_timeout),
+        );
+
+        let i2c_bus = Mutex::new(i2c);
+        let i2c_bus = I2C_BUS.init(i2c_bus);
 
         if cfg!(feature = "bme280") {
-            sensors.bme280 = Some(Bme280::new(I2cDevice::new(i2c_bus)).await.unwrap());
+            sensors.new_bme280(I2cDevice::new(i2c_bus)).await.unwrap();
         }
 
         if cfg!(feature = "scd30") {
-            sensors.scd30 = Some(Scd30::new(I2cDevice::new(i2c_bus)).await.unwrap());
+            sensors.new_scd30(I2cDevice::new(i2c_bus)).await.unwrap();
         }
     }
 
     if cfg!(feature = "sds011") {
-        let (uart_tx_pin, uart_rx_pin) = (io.pins.gpio17, io.pins.gpio16);
+        let (tx, rx) = (io.pins.gpio17, io.pins.gpio16);
 
         let uart_config = esp_hal::uart::config::Config {
             baudrate: 9600,
             data_bits: esp_hal::uart::config::DataBits::DataBits8,
             parity: esp_hal::uart::config::Parity::ParityNone,
             stop_bits: esp_hal::uart::config::StopBits::STOP1,
-            ..esp_hal::uart::config::Config::default()
+            ..Default::default()
         };
         uart_config.rx_fifo_full_threshold(READ_BUF_SIZE as u16);
 
-        let mut uart =
-            Uart::new_async_with_config(peripherals.UART2, uart_config, uart_tx_pin, uart_rx_pin)
-                .unwrap();
+        let mut uart = Uart::new_async_with_config(peripherals.UART2, uart_config, tx, rx)
+            .expect("Failed to initialize UART");
+
         uart.set_at_cmd(esp_hal::uart::config::AtCmdConfig::new(
             None, None, None, AT_CMD, None,
         ));
 
-        sensors.sds011 = Some(Sds011::new(uart).await.unwrap());
+        sensors.new_sds011(uart).await.unwrap();
     }
 
     let wifi = Wifi::new(
@@ -150,96 +133,41 @@ async fn main(spawner: Spawner) {
 }
 
 #[embassy_executor::task]
-async fn measure(
-    stack: &'static Stack<WifiDevice<'static, WifiStaDevice>>,
-    mut sensors: Sensors<
-        I2cDevice<'static, NoopRawMutex, I2c<'static, I2C0, Async>>,
-        Uart<'static, UART2, Async>,
-    >,
-) {
+async fn measure(stack: &'static Stack<WifiDevice<'static, WifiStaDevice>>, mut sensors: Sensors) {
     let mut rx_buffer = [0; 4096];
     let mut tx_buffer = [0; 4096];
 
-    let mut args: [(&'static str, f32); TOTAL_DATA_POINTS] = [("", 0.0); TOTAL_DATA_POINTS];
-
     loop {
-        let mut index = 0;
-        if cfg!(feature = "bme280") {
-            if let Some(ref mut bme280) = sensors.bme280 {
-                match bme280.measure().await {
-                    Ok(measurement) => {
-                        args[index] = ("temperature", measurement.temperature);
-                        index += 1;
-                        args[index] = ("humidity", measurement.humidity);
-                        index += 1;
-                        args[index] = ("pressure", measurement.pressure);
-                        index += 1;
-                    }
-                    Err(e) => {
-                        info!("Error taking BME280 measurement: {:?}", e);
-                        Timer::after(Duration::from_secs(10)).await;
-                        continue;
-                    }
-                }
-            } else {
-                // Handle the case where bme280 is None if necessary
-                info!("BME280 sensor is not available");
+        let mut sensor_data = SensorData::default();
+
+        if let Some(ref mut bme280) = sensors.bme280 {
+            if let Err(e) = bme280.measure(&mut sensor_data).await {
+                info!("Error taking BME280 measurement: {:?}", e);
                 Timer::after(Duration::from_secs(10)).await;
                 continue;
             }
-        };
+        }
 
-        if cfg!(feature = "scd30") {
-            if let Some(ref mut scd30) = sensors.scd30 {
-                match scd30.measure().await {
-                    Ok(measurement) => {
-                        args[index] = ("temperature", measurement.temperature);
-                        index += 1;
-                        args[index] = ("humidity", measurement.humidity);
-                        index += 1;
-                        args[index] = ("co2", measurement.co2);
-                        index += 1;
-                    }
-                    Err(e) => {
-                        info!("Error taking SCD30 measurement: {:?}", e);
-                        Timer::after(Duration::from_secs(10)).await;
-                        continue;
-                    }
-                }
-            } else {
-                // Handle the case where scd30 is None if necessary
-                info!("SCD30 sensor is not available");
+        if let Some(ref mut scd30) = sensors.scd30 {
+            if let Err(e) = scd30.measure(&mut sensor_data).await {
+                info!("Error taking SCD30 measurement: {:?}", e);
                 Timer::after(Duration::from_secs(10)).await;
                 continue;
             }
-        };
+        }
 
-        if cfg!(feature = "sds011") {
-            if let Some(ref mut sds011) = sensors.sds011 {
-                match sds011.measure().await {
-                    Ok(measurement) => {
-                        args[index] = ("air_quality_pm2_5", measurement.pm2_5);
-                        index += 1;
-                        args[index] = ("air_quality_pm10", measurement.pm10);
-                    }
-                    Err(e) => {
-                        info!("Error taking SDS011 measurement: {:?}", e);
-                        Timer::after(Duration::from_secs(10)).await;
-                        continue;
-                    }
-                }
-            } else {
-                // Handle the case where bme280 is None if necessary
-                info!("SDS011 sensor is not available");
+        if let Some(ref mut sds011) = sensors.sds011 {
+            if let Err(e) = sds011.measure(&mut sensor_data).await {
+                info!("Error taking SDS011 measurement: {:?}", e);
                 Timer::after(Duration::from_secs(10)).await;
                 continue;
             }
-        };
+        }
 
-        let message = match format_mqtt_message(&args) {
+        let message = match format_mqtt_message(&sensor_data) {
             Ok(message) => message,
             Err(e) => {
-                info!("Error formating MQTT message: {e:?}");
+                info!("Error formatting MQTT message: {e:?}");
                 Timer::after(Duration::from_secs(10)).await;
                 continue;
             }
@@ -323,12 +251,12 @@ async fn measure(
     }
 }
 
-fn format_mqtt_message(args: &[(&str, f32)]) -> Result<String<256>, Error> {
+fn format_mqtt_message(sensor_data: &SensorData) -> Result<String<256>, Error> {
     let mut payload: String<256> = String::new();
 
     if cfg!(feature = "json") {
         write!(payload, "{{\"location\": \"{}\"", CONFIG.location)?;
-        for (key, value) in args {
+        for (key, value) in sensor_data.data.iter() {
             write!(payload, ", \"{}\": \"{:.2}\"", key, value)?;
         }
         write!(payload, "}}")?;
@@ -337,7 +265,7 @@ fn format_mqtt_message(args: &[(&str, f32)]) -> Result<String<256>, Error> {
     if cfg!(feature = "influx") {
         write!(payload, "weather,location={}", CONFIG.location)?;
         let mut first = true;
-        for (key, value) in args {
+        for (key, value) in sensor_data.data.iter() {
             if first {
                 write!(payload, " {}={:.2}", key, value)?;
                 first = false;
@@ -348,22 +276,4 @@ fn format_mqtt_message(args: &[(&str, f32)]) -> Result<String<256>, Error> {
     }
 
     Ok(payload)
-}
-
-const fn get_total_data_points() -> usize {
-    let mut datapoints: usize = 0;
-
-    if cfg!(feature = "bme280") {
-        datapoints += BME280_DATA_POINT;
-    }
-
-    if cfg!(feature = "scd30") {
-        datapoints += SCD30_DATA_POINT
-    }
-
-    if cfg!(feature = "sds011") {
-        datapoints += SDS011_DATA_POINT
-    }
-
-    datapoints
 }

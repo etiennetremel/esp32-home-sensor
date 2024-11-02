@@ -10,7 +10,7 @@ sds011-nostd-rs = { rev = "010353fc33be4607c45fe8c0df6fce9101e12831", git = "htt
 bme280-rs = "0.3.0"
 libscd = { version = "0.3.1", features = ["scd30", "async", "defmt"] }
 
-embassy-executor = { version = "0.6.0", package = "embassy-executor", features = [
+embassy-executor = { version = "0.6.1", package = "embassy-executor", features = [
   "executor-thread",
   "task-arena-size-24576",
 ] }
@@ -35,7 +35,7 @@ esp-backtrace = { version = "0.14.2", features = [
   "panic-handler",
   "println",
 ] }
-esp-hal = { version = "0.21.0", features = ["esp32"] }
+esp-hal = { version = "0.21.1", features = ["esp32"] }
 esp-hal-embassy = { version = "0.4.0", features = ["esp32"] }
 esp-println = { version = "0.12.0", features = ["esp32", "log"] }
 esp-wifi = { version = "0.10.1", default-features = false, features = [
