@@ -21,6 +21,9 @@ use crate::sensors::{bme280::Bme280, scd30::Scd30, sds011::Sds011};
 pub enum SensorError {
     InitFailure,
     MeasurementFailure,
+    Bme280NoTemperatureData,
+    Bme280NoHumidityData,
+    Bme280NoPressureData,
 }
 
 #[derive(Default, Debug)]
@@ -63,7 +66,7 @@ impl Sensors {
         &mut self,
         i2c: I2cDevice<'static, NoopRawMutex, I2c<'static, I2C0, Async>>,
     ) -> Result<(), SensorError> {
-        self.bme280 = Some(Bme280::new(i2c).await.unwrap());
+        self.bme280 = Some(Bme280::new(i2c).await?);
         Ok(())
     }
 
@@ -71,7 +74,7 @@ impl Sensors {
         &mut self,
         i2c: I2cDevice<'static, NoopRawMutex, I2c<'static, I2C0, Async>>,
     ) -> Result<(), SensorError> {
-        self.scd30 = Some(Scd30::new(i2c).await.unwrap());
+        self.scd30 = Some(Scd30::new(i2c).await?);
         Ok(())
     }
 
@@ -79,7 +82,25 @@ impl Sensors {
         &mut self,
         uart: Uart<'static, UART2, Async>,
     ) -> Result<(), SensorError> {
-        self.sds011 = Some(Sds011::new(uart).await.unwrap());
+        self.sds011 = Some(Sds011::new(uart).await?);
         Ok(())
+    }
+
+    pub async fn measure(&mut self) -> Result<SensorData, SensorError> {
+        let mut sensor_data = SensorData::default();
+
+        if let Some(ref mut bme280) = self.bme280 {
+            bme280.measure(&mut sensor_data).await?;
+        }
+
+        if let Some(ref mut scd30) = self.scd30 {
+            scd30.measure(&mut sensor_data).await?;
+        }
+
+        if let Some(ref mut sds011) = self.sds011 {
+            sds011.measure(&mut sensor_data).await?;
+        }
+
+        Ok(sensor_data)
     }
 }

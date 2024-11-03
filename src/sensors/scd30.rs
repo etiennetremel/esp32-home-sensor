@@ -53,8 +53,13 @@ impl<I2C: I2c> Scd30<I2C> {
 
 impl<I2C: I2c> Sensor for Scd30<I2C> {
     async fn measure(&mut self, data: &mut SensorData) -> Result<(), SensorError> {
-        while !self.sensor.data_ready().await.unwrap() {
-            Timer::after(Duration::from_millis(100)).await;
+        // Wait until data is ready
+        loop {
+            match self.sensor.data_ready().await {
+                Ok(true) => break,
+                Ok(false) => Timer::after(Duration::from_millis(100)).await,
+                Err(_) => return Err(SensorError::MeasurementFailure),
+            }
         }
 
         match self.sensor.measurement().await {

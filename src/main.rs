@@ -38,7 +38,7 @@ pub mod sensors;
 mod wifi;
 
 use config::CONFIG;
-use sensors::{Sensor, SensorData, Sensors};
+use sensors::{SensorData, Sensors};
 use wifi::Wifi;
 
 static I2C_BUS: StaticCell<Mutex<NoopRawMutex, I2c<I2C0, Async>>> = StaticCell::new();
@@ -72,8 +72,8 @@ async fn main(spawner: Spawner) {
     if cfg!(feature = "bme280") || cfg!(feature = "scd30") {
         let (sda, scl) = (io.pins.gpio21, io.pins.gpio22);
 
-        // Scd30 appear to require additional timeout for the i2c commands
-        let i2c_timeout = 20u32;
+        // Some sensors appear to require additional timeout for the i2c commands
+        let i2c_timeout = 1000u32;
 
         let i2c = I2c::new_with_timeout_async(
             peripherals.I2C0,
@@ -138,31 +138,14 @@ async fn measure(stack: &'static Stack<WifiDevice<'static, WifiStaDevice>>, mut 
     let mut tx_buffer = [0; 4096];
 
     loop {
-        let mut sensor_data = SensorData::default();
-
-        if let Some(ref mut bme280) = sensors.bme280 {
-            if let Err(e) = bme280.measure(&mut sensor_data).await {
-                info!("Error taking BME280 measurement: {:?}", e);
+        let sensor_data = match sensors.measure().await {
+            Ok(sensor_data) => sensor_data,
+            Err(e) => {
+                info!("Error retrieving sensors data: {e:?}");
                 Timer::after(Duration::from_secs(10)).await;
                 continue;
             }
-        }
-
-        if let Some(ref mut scd30) = sensors.scd30 {
-            if let Err(e) = scd30.measure(&mut sensor_data).await {
-                info!("Error taking SCD30 measurement: {:?}", e);
-                Timer::after(Duration::from_secs(10)).await;
-                continue;
-            }
-        }
-
-        if let Some(ref mut sds011) = sensors.sds011 {
-            if let Err(e) = sds011.measure(&mut sensor_data).await {
-                info!("Error taking SDS011 measurement: {:?}", e);
-                Timer::after(Duration::from_secs(10)).await;
-                continue;
-            }
-        }
+        };
 
         let message = match format_mqtt_message(&sensor_data) {
             Ok(message) => message,
