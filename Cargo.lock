@@ -1080,8 +1080,9 @@ checksum = "955d28af4278de8121b7ebeb796b6a45735dc01436d898801014aced2773a3d6"
 
 [[package]]
 name = "sds011-nostd-rs"
-version = "0.1.0"
-source = "git+https://github.com/etiennetremel/sds011-nostd-rs.git?rev=010353fc33be4607c45fe8c0df6fce9101e12831#010353fc33be4607c45fe8c0df6fce9101e12831"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2c448b53b3e148661107d45a435d3f3c5c2b0ff962fb98bb7aab9c59ba346776"
 dependencies = [
  "embedded-io-async",
  "log",
