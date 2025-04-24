@@ -1,4 +1,2 @@
 [toolchain]
 channel = "esp"
-components = ["rustfmt", "clippy"]
-targets = ["xtensa-esp32-none-elf"]

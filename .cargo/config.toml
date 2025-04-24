@@ -3,10 +3,12 @@ runner = "espflash flash --monitor"
 
 [build]
 rustflags = [
-  "-C", "link-arg=-Trom_functions.x",
-  "-C", "link-arg=-nostartfiles",
-  "-C", "link-arg=-Wl,-Tlinkall.x",
-  "-C", "link-arg=-Wl,--nmagic",
+  "-C",
+  "link-arg=-nostartfiles",
+  "-C",
+  "link-arg=-Wl,-Tlinkall.x",
+  "-C",
+  "link-arg=-Wl,--nmagic",
 ]
 target = "xtensa-esp32-none-elf"
 

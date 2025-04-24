@@ -4,12 +4,7 @@ use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use heapless::FnvIndexMap;
 
-use crate::hal::{
-    i2c::I2c,
-    peripherals::{I2C0, UART2},
-    uart::Uart,
-    Async,
-};
+use crate::hal::{i2c::master::I2c, uart::Uart, Async};
 
 pub mod bme280;
 pub mod scd30;
@@ -42,9 +37,9 @@ pub trait Sensor {
 }
 
 pub struct Sensors {
-    pub bme280: Option<Bme280<I2cDevice<'static, NoopRawMutex, I2c<'static, I2C0, Async>>>>,
-    pub sds011: Option<Sds011<Uart<'static, UART2, Async>>>,
-    pub scd30: Option<Scd30<I2cDevice<'static, NoopRawMutex, I2c<'static, I2C0, Async>>>>,
+    pub bme280: Option<Bme280<I2cDevice<'static, NoopRawMutex, I2c<'static, Async>>>>,
+    pub sds011: Option<Sds011<Uart<'static, Async>>>,
+    pub scd30: Option<Scd30<I2cDevice<'static, NoopRawMutex, I2c<'static, Async>>>>,
 }
 
 impl Default for Sensors {
@@ -64,7 +59,7 @@ impl Sensors {
 
     pub async fn new_bme280(
         &mut self,
-        i2c: I2cDevice<'static, NoopRawMutex, I2c<'static, I2C0, Async>>,
+        i2c: I2cDevice<'static, NoopRawMutex, I2c<'static, Async>>,
     ) -> Result<(), SensorError> {
         self.bme280 = Some(Bme280::new(i2c).await?);
         Ok(())
@@ -72,16 +67,13 @@ impl Sensors {
 
     pub async fn new_scd30(
         &mut self,
-        i2c: I2cDevice<'static, NoopRawMutex, I2c<'static, I2C0, Async>>,
+        i2c: I2cDevice<'static, NoopRawMutex, I2c<'static, Async>>,
     ) -> Result<(), SensorError> {
         self.scd30 = Some(Scd30::new(i2c).await?);
         Ok(())
     }
 
-    pub async fn new_sds011(
-        &mut self,
-        uart: Uart<'static, UART2, Async>,
-    ) -> Result<(), SensorError> {
+    pub async fn new_sds011(&mut self, uart: Uart<'static, Async>) -> Result<(), SensorError> {
         self.sds011 = Some(Sds011::new(uart).await?);
         Ok(())
     }

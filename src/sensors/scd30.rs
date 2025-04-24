@@ -62,7 +62,7 @@ impl<I2C: I2c> Sensor for Scd30<I2C> {
             }
         }
 
-        match self.sensor.measurement().await {
+        match self.sensor.read_measurement().await {
             Ok(sample) => {
                 data.add_measurement("temperature", sample.temperature);
                 data.add_measurement("humidity", sample.humidity);

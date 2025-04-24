@@ -1,7 +1,5 @@
 #![no_std]
 #![no_main]
-#![feature(generic_arg_infer)]
-#![feature(type_alias_impl_trait)]
 
 use core::fmt::{Error, Write};
 use heapless::String;
@@ -18,13 +16,16 @@ extern crate alloc;
 
 use esp_alloc as _;
 use esp_backtrace as _;
-use esp_hal as hal;
+use esp_hal::{self as hal};
 use esp_println::logger::init_logger;
-use esp_wifi::wifi::{WifiDevice, WifiStaDevice};
 
 use hal::{
-    gpio::Io, i2c::I2c, peripherals::I2C0, prelude::*, rng::Rng, timer::timg::TimerGroup,
-    uart::Uart, Async,
+    i2c::master::{BusTimeout, I2c},
+    rng::Rng,
+    time::Rate,
+    timer::timg::TimerGroup,
+    uart::{RxConfig, Uart},
+    Async,
 };
 
 use rust_mqtt::{
@@ -41,12 +42,12 @@ use config::CONFIG;
 use sensors::{SensorData, Sensors};
 use wifi::Wifi;
 
-static I2C_BUS: StaticCell<Mutex<NoopRawMutex, I2c<I2C0, Async>>> = StaticCell::new();
+static I2C_BUS: StaticCell<Mutex<NoopRawMutex, I2c<'static, Async>>> = StaticCell::new();
 
-const READ_BUF_SIZE: usize = 10;
+const READ_BUF_SIZE: usize = 64;
 const AT_CMD: u8 = 0xAB;
 
-#[main]
+#[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
     init_logger(log::LevelFilter::Info);
 
@@ -54,7 +55,7 @@ async fn main(spawner: Spawner) {
 
     let rng = Rng::new(peripherals.RNG);
 
-    esp_alloc::heap_allocator!(72 * 1024);
+    esp_alloc::heap_allocator!(size: 72 * 1024);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     let timg1 = TimerGroup::new(peripherals.TIMG1);
@@ -65,23 +66,20 @@ async fn main(spawner: Spawner) {
     // https://github.com/esp-rs/esp-hal/issues/1626
     Timer::after(Duration::from_millis(1000)).await;
 
-    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
-
     let mut sensors = Sensors::new();
 
     if cfg!(feature = "bme280") || cfg!(feature = "scd30") {
-        let (sda, scl) = (io.pins.gpio21, io.pins.gpio22);
+        let (sda, scl) = (peripherals.GPIO21, peripherals.GPIO22);
 
-        // Some sensors appear to require additional timeout for the i2c commands
-        let i2c_timeout = 1000u32;
+        let i2c_config = hal::i2c::master::Config::default()
+            .with_frequency(Rate::from_khz(100))
+            .with_timeout(BusTimeout::BusCycles(24));
 
-        let i2c = I2c::new_with_timeout_async(
-            peripherals.I2C0,
-            sda,
-            scl,
-            100u32.kHz(),
-            Some(i2c_timeout),
-        );
+        let i2c = I2c::new(peripherals.I2C0, i2c_config)
+            .unwrap()
+            .with_sda(sda)
+            .with_scl(scl)
+            .into_async();
 
         let i2c_bus = Mutex::new(i2c);
         let i2c_bus = I2C_BUS.init(i2c_bus);
@@ -96,23 +94,22 @@ async fn main(spawner: Spawner) {
     }
 
     if cfg!(feature = "sds011") {
-        let (tx, rx) = (io.pins.gpio17, io.pins.gpio16);
+        let (tx, rx) = (peripherals.GPIO17, peripherals.GPIO16);
 
-        let uart_config = esp_hal::uart::config::Config {
-            baudrate: 9600,
-            data_bits: esp_hal::uart::config::DataBits::DataBits8,
-            parity: esp_hal::uart::config::Parity::ParityNone,
-            stop_bits: esp_hal::uart::config::StopBits::STOP1,
-            ..Default::default()
-        };
-        uart_config.rx_fifo_full_threshold(READ_BUF_SIZE as u16);
+        let uart_config = hal::uart::Config::default()
+            .with_rx(RxConfig::default().with_fifo_full_threshold(READ_BUF_SIZE as u16))
+            .with_baudrate(9600)
+            .with_stop_bits(hal::uart::StopBits::_1)
+            .with_data_bits(hal::uart::DataBits::_8)
+            .with_parity(hal::uart::Parity::None);
 
-        let mut uart = Uart::new_async_with_config(peripherals.UART2, uart_config, tx, rx)
-            .expect("Failed to initialize UART");
+        let mut uart = Uart::new(peripherals.UART2, uart_config)
+            .unwrap()
+            .with_tx(tx)
+            .with_rx(rx)
+            .into_async();
 
-        uart.set_at_cmd(esp_hal::uart::config::AtCmdConfig::new(
-            None, None, None, AT_CMD, None,
-        ));
+        uart.set_at_cmd(hal::uart::AtCmdConfig::default().with_cmd_char(AT_CMD));
 
         sensors.new_sds011(uart).await.unwrap();
     }
@@ -133,7 +130,7 @@ async fn main(spawner: Spawner) {
 }
 
 #[embassy_executor::task]
-async fn measure(stack: &'static Stack<WifiDevice<'static, WifiStaDevice>>, mut sensors: Sensors) {
+async fn measure(stack: Stack<'static>, mut sensors: Sensors) {
     let mut rx_buffer = [0; 4096];
     let mut tx_buffer = [0; 4096];
 
