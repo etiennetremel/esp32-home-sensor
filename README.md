@@ -11,20 +11,24 @@ ESP-32 home sensor
 
 ```mermaid
 flowchart LR
-    A(fa:fa-microchip ESP32<br /><small><i>outdoor front</i></small>)
-    B(fa:fa-microchip ESP32<br /><small><i>indoor living room</i></small>)
-    C(fa:fa-microchip ESP32<br /><small><i>indoor bedroom</i></small>)
-    D(fa:fa-tower-broadcast Mosquitto MQTT)
-    E(fa:fa-gear Telegraf)
-    F(fa:fa-database InfluxDB)
-    G(fa:fa-chart-line Dashboards)
+    Outdoor(fa:fa-microchip ESP32<br /><small><i>outdoor front</i></small>)
+    LivingRoom(fa:fa-microchip ESP32<br /><small><i>indoor living room</i></small>)
+    BedRoom(fa:fa-microchip ESP32<br /><small><i>indoor bedroom</i></small>)
+    MQTT(fa:fa-tower-broadcast Mosquitto MQTT)
+    Telegraf(fa:fa-gear Telegraf)
+    InfluxDB(fa:fa-database InfluxDB)
+    InfluxDashboards(fa:fa-chart-line Influx<br>Dashboards)
+    HomeAssistant(fa:fa-house HomeAssistant)
 
-    A-->D
-    B-->D
-    C-->D
-    D-->E
-    E-->F
-    F-->G
+    Outdoor-->MQTT
+    LivingRoom-->MQTT
+    BedRoom-->MQTT
+    MQTT-->Telegraf
+    subgraph Influx Stack
+    Telegraf-->InfluxDB
+    InfluxDashboards-->InfluxDB
+    end
+    MQTT-.->HomeAssistant
 ```
 
 ## Getting started
