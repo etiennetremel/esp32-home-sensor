@@ -11,24 +11,46 @@ ESP-32 home sensor
 
 ```mermaid
 flowchart LR
+    OutdoorSds011(fa:fa-microchip Sensor<br><small><i>SDS011</i></small>)
+    OutdoorBme280(fa:fa-microchip Sensor<br><small><i>BME280</i></small>)
     Outdoor(fa:fa-microchip ESP32<br /><small><i>outdoor front</i></small>)
-    LivingRoom(fa:fa-microchip ESP32<br /><small><i>indoor living room</i></small>)
-    BedRoom(fa:fa-microchip ESP32<br /><small><i>indoor bedroom</i></small>)
+    LivingRoomBme280(fa:fa-microchip Sensor<br><small><i>BME280</i></small>)
+    LivingRoom(fa:fa-microchip ESP32<br /><small><i>living room</i></small>)
+    BedRoomScd30(fa:fa-microchip Sensor<br><small><i>SCD30</i></small>)
+    BedRoom(fa:fa-microchip ESP32<br /><small><i>bedroom</i></small>)
     MQTT(fa:fa-tower-broadcast Mosquitto MQTT)
     Telegraf(fa:fa-gear Telegraf)
     InfluxDB(fa:fa-database InfluxDB)
     InfluxDashboards(fa:fa-chart-line Influx<br>Dashboards)
     HomeAssistant(fa:fa-house HomeAssistant)
 
-    Outdoor-->MQTT
-    LivingRoom-->MQTT
-    BedRoom-->MQTT
-    MQTT-->Telegraf
+    subgraph Areas
+    direction TB
+    subgraph Outdoor Area
+    direction LR
+    OutdoorBme280--Read-->Outdoor
+    OutdoorSds011--Read-->Outdoor
+    end
+
+    subgraph Living Room Area
+    LivingRoomBme280--Read-->LivingRoom
+    end
+
+    subgraph Bed Room Area
+    BedRoomScd30--Read-->BedRoom
+    end
+    end
+
     subgraph Influx Stack
     Telegraf-->InfluxDB
-    InfluxDashboards-->InfluxDB
+    InfluxDB-->InfluxDashboards
     end
-    MQTT-.->HomeAssistant
+
+    Outdoor--Publish-->MQTT
+    LivingRoom--Publish-->MQTT
+    BedRoom--Publish-->MQTT
+    MQTT--Subscribe-->Telegraf
+    MQTT-.Subscribe.->HomeAssistant
 ```
 
 ## Getting started
