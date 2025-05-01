@@ -8,7 +8,7 @@ use static_cell::StaticCell;
 
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_executor::Spawner;
-use embassy_net::{dns::DnsQueryType, tcp::TcpSocket, Stack};
+use embassy_net::Stack;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embassy_time::{Duration, Timer};
 
@@ -17,6 +17,7 @@ extern crate alloc;
 use esp_alloc as _;
 use esp_backtrace as _;
 use esp_hal::{self as hal};
+use esp_mbedtls::Tls;
 use esp_println::logger::init_logger;
 
 use hal::{
@@ -28,18 +29,17 @@ use hal::{
     Async,
 };
 
-use rust_mqtt::{
-    client::{client::MqttClient, client_config::ClientConfig},
-    packet::v5::publish_packet::QualityOfService,
-    utils::rng_generator::CountingRng,
-};
-
 pub mod config;
+pub mod cstr;
+mod mqtt;
 pub mod sensors;
+mod transport;
 mod wifi;
 
 use config::CONFIG;
+use mqtt::Mqtt;
 use sensors::{SensorData, Sensors};
+use transport::Transport;
 use wifi::Wifi;
 
 static I2C_BUS: StaticCell<Mutex<NoopRawMutex, I2c<'static, Async>>> = StaticCell::new();
@@ -49,13 +49,13 @@ const AT_CMD: u8 = 0xAB;
 
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
-    init_logger(log::LevelFilter::Info);
+    init_logger(log::LevelFilter::Trace);
 
     let peripherals = esp_hal::init(esp_hal::Config::default());
 
     let rng = Rng::new(peripherals.RNG);
 
-    esp_alloc::heap_allocator!(size: 72 * 1024);
+    esp_alloc::heap_allocator!(size: 115 * 1024);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     let timg1 = TimerGroup::new(peripherals.TIMG1);
@@ -118,7 +118,7 @@ async fn main(spawner: Spawner) {
         peripherals.WIFI,
         timg1.timer0,
         peripherals.RADIO_CLK,
-        rng,
+        rng.clone(),
         spawner,
     )
     .await
@@ -126,11 +126,17 @@ async fn main(spawner: Spawner) {
 
     wifi.connect().await.unwrap();
 
-    spawner.spawn(measure(wifi.stack, sensors)).ok();
+    let mut tls = Tls::new(peripherals.SHA)
+        .unwrap()
+        .with_hardware_rsa(peripherals.RSA);
+
+    tls.set_debug(0);
+
+    spawner.spawn(measure(wifi.stack, sensors, tls)).ok();
 }
 
 #[embassy_executor::task]
-async fn measure(stack: Stack<'static>, mut sensors: Sensors) {
+async fn measure(stack: Stack<'static>, mut sensors: Sensors, tls: Tls<'static>) {
     let mut rx_buffer = [0; 4096];
     let mut tx_buffer = [0; 4096];
 
@@ -153,66 +159,25 @@ async fn measure(stack: Stack<'static>, mut sensors: Sensors) {
             }
         };
 
-        let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
-
-        let host_addr = match stack
-            .dns_query(CONFIG.mqtt_hostname, DnsQueryType::A)
-            .await
-            .map(|a| a[0])
-        {
-            Ok(address) => address,
-            Err(e) => {
-                info!("DNS lookup for MQTT host failed with error: {e:?}");
-                continue;
-            }
-        };
-
-        let socket_addr = (host_addr, CONFIG.mqtt_port);
-
-        info!("Connecting to MQTT server...");
-        let r = socket.connect(socket_addr).await;
-        if let Err(e) = r {
-            info!("Connect error: {e:?}");
-            continue;
-        }
-        info!("Connected to MQTT server");
-
-        info!("Initialising MQTT connection");
         let mut mqtt_rx_buffer = [0; 1024];
         let mut mqtt_tx_buffer = [0; 1024];
-        let mut mqtt_config: ClientConfig<5, CountingRng> = ClientConfig::new(
-            rust_mqtt::client::client_config::MqttVersion::MQTTv5,
-            CountingRng(20000),
-        );
-        mqtt_config.add_username(CONFIG.mqtt_username);
-        mqtt_config.add_password(CONFIG.mqtt_password);
 
-        let mut client = MqttClient::<_, 5, _>::new(
-            socket,
-            &mut mqtt_tx_buffer,
-            256,
-            &mut mqtt_rx_buffer,
-            256,
-            mqtt_config,
-        );
+        info!("Creating TCP session");
+        let session = Transport::new(stack, &tls, &mut rx_buffer, &mut tx_buffer)
+            .await
+            .unwrap();
 
-        if let Err(e) = client.connect_to_broker().await {
-            info!("Couldn't connect to MQTT broker: {e:?}");
-            Timer::after(Duration::from_secs(10)).await;
-            continue;
-        }
+        info!("Creating MQTT client");
+        let mut mqtt = Mqtt::new(session, &mut mqtt_tx_buffer, &mut mqtt_rx_buffer)
+            .await
+            .unwrap();
 
         info!(
             "Publishing to topic {:?}, payload: {:?}",
             CONFIG.mqtt_topic, message
         );
-        if let Err(e) = client
-            .send_message(
-                CONFIG.mqtt_topic,
-                message.as_bytes(),
-                QualityOfService::QoS0,
-                false,
-            )
+        if let Err(e) = mqtt
+            .send_message(CONFIG.mqtt_topic, message.as_bytes())
             .await
         {
             info!("Error publishing MQTT message: {e:?}");

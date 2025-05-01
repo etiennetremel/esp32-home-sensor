@@ -88,7 +88,6 @@ Before flashing the device, you will need to configure parameters in the
 `./cfg.toml` file, for example:
 
 ```toml
-[esp32_home_sensor]
 wifi_ssid = "my-wifi"
 wifi_psk = "wifi-password"
 hostname = "esp32-outdoor"
@@ -99,6 +98,7 @@ mqtt_password = "someranddompassword"
 mqtt_topic = "sensors"
 measurement_interval_seconds = 300
 location = "outdoor"
+measurement_interval_seconds = 60
 ```
 
 #### Development
@@ -137,6 +137,8 @@ MQTT message format to use:
 | sds011  | Enable SDS011 sensor              | yes     |
 | influx  | Set MQTT payload format to Influx | no      |
 | json    | Set MQTT payload format to Json   | yes     |
+| tls     | Use TLS to connect to the MQTT    | no      |
+| mtls    | Use MTLS to connect to the MQTT   | no      |
 
 For example, to only enable BME280 with JSON format:
 
@@ -147,6 +149,50 @@ cargo espflash flash --release
 
 # enable BME280 with MQTT message in INFLUX format
 cargo espflash flash --release --features influx,bme280 --no-default-features
+```
+
+#### TLS
+
+To enable `TLS` (mqtts), update the `cfg.toml` config to include the CA certificate:
+
+```toml
+tls_ca = """
+-----BEGIN CERTIFICATE-----
+// your CA certificate here
+-----END CERTIFICATE-----
+"""
+```
+
+Then make sure to enable the `tls` feature when you flash:
+```bash
+cargo run --release --features influx,bme280,tls --no-default-features
+```
+
+#### mTLS
+
+To enable `mTLS`, update the `cfg.toml` config to include the CA, client
+certificate and private key:
+
+```toml
+tls_ca = """
+-----BEGIN CERTIFICATE-----
+// your CA certificate here
+-----END CERTIFICATE-----
+"""
+tls_key = """
+-----BEGIN RSA PRIVATE KEY-----
+// your private key here
+-----END RSA PRIVATE KEY-----
+"""
+tls_cert = """
+-----BEGIN CERTIFICATE-----
+// your certificate here
+-----END CERTIFICATE-----
+```
+
+Then make sure to enable both `tls` and `mtls` features when you flash:
+```bash
+cargo run --release --features influx,bme280,tls,mtls --no-default-features
 ```
 
 ### Setup infrastructure using Docker

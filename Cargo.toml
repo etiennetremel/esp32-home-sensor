@@ -10,6 +10,7 @@ sds011-nostd-rs = "0.1.1"
 bme280-rs = "0.3.0"
 libscd = { version = "0.5.0", features = ["scd30", "async", "defmt"] }
 
+embassy-embedded-hal = "0.3.0"
 embassy-executor = { version = "0.7.0", features = [
   "executor-thread",
   "task-arena-size-24576",
@@ -27,7 +28,6 @@ embassy-time = { version = "0.4.0", features = ["generic-queue-8"] }
 
 embedded-io-async = "0.6.1"
 embedded-hal-async = "1.0.0"
-embassy-embedded-hal = "0.3.0"
 
 esp-alloc = "0.7.0"
 esp-backtrace = { version = "0.15.1", features = [
@@ -37,6 +37,9 @@ esp-backtrace = { version = "0.15.1", features = [
 ] }
 esp-hal = { version = "1.0.0-beta.0", features = ["esp32", "unstable"] }
 esp-hal-embassy = { version = "0.7.0", features = ["esp32"] }
+esp-mbedtls = { ref = "03458c34e6c5cd8578010bb4429dc362b9358185", git = "https://github.com/esp-rs/esp-mbedtls", features = [
+  "esp32",
+] }
 esp-println = { version = "0.13.1", features = ["esp32", "log"] }
 esp-wifi = { version = "0.13.0", default-features = false, features = [
   "esp32",
@@ -47,10 +50,12 @@ esp-wifi = { version = "0.13.0", default-features = false, features = [
 
 heapless = { version = "0.8.0", default-features = false }
 log = "0.4.27"
-rand_core = "0.9"
-rust-mqtt = { version = "0.3.0", default-features = false, features = [] }
+rust-mqtt = { version = "0.3.0", default-features = false, features = ["tls"] }
 static_cell = { version = "2.1.0", features = ["nightly"] }
-toml-cfg = "0.2.0"
+
+[build-dependencies]
+toml = "0.8"
+serde = { version = "1.0", features = ["derive"] }
 
 [profile.dev]
 opt-level = "s"
@@ -75,10 +80,17 @@ lto = 'fat'
 overflow-checks = false
 
 [features]
-# default = ["json", "bme280", "sds011"]
-default = []
+default = ["influx", "tls", "mtls"]
+
+# Dataformat
 influx = []
 json = []
+
+# Sensors
 bme280 = []
 scd30 = []
 sds011 = []
+
+# TLS
+mtls = []
+tls = []

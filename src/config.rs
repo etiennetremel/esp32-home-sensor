@@ -1,33 +1,18 @@
-#[toml_cfg::toml_config]
 pub struct Config {
-    #[default("")]
-    wifi_ssid: &'static str,
-
-    #[default("")]
-    wifi_psk: &'static str,
-
-    // smoltcp currently doesn't have a way of giving a hostname through DHCP
-    #[default("esp32")]
-    hostname: &'static str,
-
-    #[default("")]
-    location: &'static str,
-
-    #[default("")]
-    mqtt_hostname: &'static str,
-
-    #[default(1883)]
-    mqtt_port: u16,
-
-    #[default("")]
-    mqtt_username: &'static str,
-
-    #[default("")]
-    mqtt_password: &'static str,
-
-    #[default("sensor")]
-    mqtt_topic: &'static str,
-
-    #[default(60)]
-    measurement_interval_seconds: u16,
+    pub wifi_ssid: &'static str,
+    pub wifi_psk: &'static str,
+    pub hostname: &'static str,
+    pub location: &'static str,
+    pub mqtt_hostname: &'static str,
+    pub mqtt_port: u16,
+    pub mqtt_username: &'static str,
+    pub mqtt_password: &'static str,
+    pub mqtt_topic: &'static str,
+    pub tls_ca: Option<&'static str>,
+    pub tls_cert: Option<&'static str>,
+    pub tls_key: Option<&'static str>,
+    pub measurement_interval_seconds: u16,
 }
+
+// config values are generated at compile time
+include!(concat!(env!("OUT_DIR"), "/config.rs"));

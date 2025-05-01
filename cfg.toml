@@ -1,4 +1,3 @@
-[esp32_home_sensor]
 wifi_ssid = "my-wifi"
 wifi_psk = "wifi-password"
 hostname = "esp32-outdoor"
@@ -8,3 +7,18 @@ mqtt_username = "esp32-outdoor"
 mqtt_password = "someranddompassword"
 mqtt_topic = "sensors"
 location = "outdoor"
+measurement_interval_seconds = 60
+# tls_ca = """
+# -----BEGIN CERTIFICATE-----
+# // your CA certificate here
+# -----END CERTIFICATE-----
+# """
+# tls_key = """
+# -----BEGIN RSA PRIVATE KEY-----
+# // your private key here
+# -----END RSA PRIVATE KEY-----
+# """
+# tls_cert = """
+# -----BEGIN CERTIFICATE-----
+# // your certificate here
+# -----END CERTIFICATE-----
