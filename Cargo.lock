@@ -851,6 +851,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "esp-hal-ota"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91b338ab6acb947c3589e8c086541b5a44c74afe5aba97c38090090c7952ea6c"
+dependencies = [
+ "embedded-storage",
+ "esp32",
+ "log",
+]
+
+[[package]]
 name = "esp-hal-procmacros"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -957,6 +968,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "esp-storage"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e98b5069bd1482fb85f9236f8ea6cd1b5b6b5a1c3c3fb8c938c97ccfbbb051b"
+dependencies = [
+ "critical-section",
+ "embedded-storage",
+ "esp-build",
+]
+
+[[package]]
 name = "esp-wifi"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1007,7 +1029,7 @@ dependencies = [
 
 [[package]]
 name = "esp32_home_sensor"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bme280-rs",
  "embassy-embedded-hal",
@@ -1021,8 +1043,10 @@ dependencies = [
  "esp-backtrace",
  "esp-hal",
  "esp-hal-embassy",
+ "esp-hal-ota",
  "esp-mbedtls",
  "esp-println",
+ "esp-storage",
  "esp-wifi",
  "heapless",
  "libscd",

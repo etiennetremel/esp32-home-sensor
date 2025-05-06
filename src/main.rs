@@ -1,9 +1,6 @@
 #![no_std]
 #![no_main]
 
-use core::fmt::{Error, Write};
-use heapless::String;
-use log::info;
 use static_cell::StaticCell;
 
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
@@ -11,8 +8,6 @@ use embassy_executor::Spawner;
 use embassy_net::Stack;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embassy_time::{Duration, Timer};
-
-extern crate alloc;
 
 use esp_alloc as _;
 use esp_backtrace as _;
@@ -29,33 +24,41 @@ use hal::{
     Async,
 };
 
+extern crate alloc;
+
 pub mod config;
+pub mod constants;
 pub mod cstr;
+mod firmware_update;
+mod measurement;
 mod mqtt;
 pub mod sensors;
-mod transport;
+pub mod transport;
 mod wifi;
 
 use config::CONFIG;
-use mqtt::Mqtt;
-use sensors::{SensorData, Sensors};
-use transport::Transport;
+use constants::*;
+use firmware_update::FirmwareUpdate;
+use measurement::Measurement;
+use sensors::Sensors;
 use wifi::Wifi;
 
 static I2C_BUS: StaticCell<Mutex<NoopRawMutex, I2c<'static, Async>>> = StaticCell::new();
+static TLS: StaticCell<Tls<'static>> = StaticCell::new();
+static STACK: StaticCell<Mutex<NoopRawMutex, Stack<'static>>> = StaticCell::new();
 
-const READ_BUF_SIZE: usize = 64;
-const AT_CMD: u8 = 0xAB;
+static RX_BUF: StaticCell<Mutex<NoopRawMutex, [u8; RX_BUFFER_SIZE]>> = StaticCell::new();
+static TX_BUF: StaticCell<Mutex<NoopRawMutex, [u8; TX_BUFFER_SIZE]>> = StaticCell::new();
 
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
-    init_logger(log::LevelFilter::Trace);
+    init_logger(log::LevelFilter::Info);
 
     let peripherals = esp_hal::init(esp_hal::Config::default());
 
     let rng = Rng::new(peripherals.RNG);
 
-    esp_alloc::heap_allocator!(size: 115 * 1024);
+    esp_alloc::heap_allocator!(size: HEAP_SIZE);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     let timg1 = TimerGroup::new(peripherals.TIMG1);
@@ -97,7 +100,7 @@ async fn main(spawner: Spawner) {
         let (tx, rx) = (peripherals.GPIO17, peripherals.GPIO16);
 
         let uart_config = hal::uart::Config::default()
-            .with_rx(RxConfig::default().with_fifo_full_threshold(READ_BUF_SIZE as u16))
+            .with_rx(RxConfig::default().with_fifo_full_threshold(UART_READ_BUFFER_SIZE as u16))
             .with_baudrate(9600)
             .with_stop_bits(hal::uart::StopBits::_1)
             .with_data_bits(hal::uart::DataBits::_8)
@@ -109,7 +112,7 @@ async fn main(spawner: Spawner) {
             .with_rx(rx)
             .into_async();
 
-        uart.set_at_cmd(hal::uart::AtCmdConfig::default().with_cmd_char(AT_CMD));
+        uart.set_at_cmd(hal::uart::AtCmdConfig::default().with_cmd_char(UART_AT_CMD));
 
         sensors.new_sds011(uart).await.unwrap();
     }
@@ -132,93 +135,41 @@ async fn main(spawner: Spawner) {
 
     tls.set_debug(0);
 
-    spawner.spawn(measure(wifi.stack, sensors, tls)).ok();
+    let tls_shared = TLS.init(tls);
+
+    let stack_shared = Mutex::new(wifi.stack);
+    let stack_shared = STACK.init(stack_shared);
+
+    let rx_buf = RX_BUF.init(Mutex::new([0; RX_BUFFER_SIZE]));
+    let tx_buf = TX_BUF.init(Mutex::new([0; TX_BUFFER_SIZE]));
+
+    let firmware_update = FirmwareUpdate::new(stack_shared, tls_shared, rx_buf, tx_buf).unwrap();
+    let measurement = Measurement::new(stack_shared, tls_shared, rx_buf, tx_buf, sensors).unwrap();
+
+    spawner.spawn(main_task(firmware_update, measurement)).ok();
 }
 
 #[embassy_executor::task]
-async fn measure(stack: Stack<'static>, mut sensors: Sensors, tls: Tls<'static>) {
-    let mut rx_buffer = [0; 4096];
-    let mut tx_buffer = [0; 4096];
-
+async fn main_task(mut firmware_update: FirmwareUpdate, mut measurement: Measurement) {
     loop {
-        let sensor_data = match sensors.measure().await {
-            Ok(sensor_data) => sensor_data,
-            Err(e) => {
-                info!("Error retrieving sensors data: {e:?}");
-                Timer::after(Duration::from_secs(10)).await;
+        if cfg!(feature = "ota") {
+            if let Err(e) = firmware_update.check().await {
+                log::error!("Firmware update error: {:?}", e);
+                Timer::after(Duration::from_secs(
+                    CONFIG.measurement_interval_seconds.into(),
+                ))
+                .await;
                 continue;
             }
-        };
-
-        let message = match format_mqtt_message(&sensor_data) {
-            Ok(message) => message,
-            Err(e) => {
-                info!("Error formatting MQTT message: {e:?}");
-                Timer::after(Duration::from_secs(10)).await;
-                continue;
-            }
-        };
-
-        let mut mqtt_rx_buffer = [0; 1024];
-        let mut mqtt_tx_buffer = [0; 1024];
-
-        info!("Creating TCP session");
-        let session = Transport::new(stack, &tls, &mut rx_buffer, &mut tx_buffer)
-            .await
-            .unwrap();
-
-        info!("Creating MQTT client");
-        let mut mqtt = Mqtt::new(session, &mut mqtt_tx_buffer, &mut mqtt_rx_buffer)
-            .await
-            .unwrap();
-
-        info!(
-            "Publishing to topic {:?}, payload: {:?}",
-            CONFIG.mqtt_topic, message
-        );
-        if let Err(e) = mqtt
-            .send_message(CONFIG.mqtt_topic, message.as_bytes())
-            .await
-        {
-            info!("Error publishing MQTT message: {e:?}");
-            Timer::after(Duration::from_secs(10)).await;
-            break;
         }
 
-        info!(
-            "Message published, waiting {:?} seconds",
-            CONFIG.measurement_interval_seconds
-        );
+        if let Err(e) = measurement.take().await {
+            log::error!("Measurement error: {:?}", e);
+        }
+
         Timer::after(Duration::from_secs(
             CONFIG.measurement_interval_seconds.into(),
         ))
         .await;
     }
-}
-
-fn format_mqtt_message(sensor_data: &SensorData) -> Result<String<256>, Error> {
-    let mut payload: String<256> = String::new();
-
-    if cfg!(feature = "json") {
-        write!(payload, "{{\"location\": \"{}\"", CONFIG.location)?;
-        for (key, value) in sensor_data.data.iter() {
-            write!(payload, ", \"{}\": \"{:.2}\"", key, value)?;
-        }
-        write!(payload, "}}")?;
-    }
-
-    if cfg!(feature = "influx") {
-        write!(payload, "weather,location={}", CONFIG.location)?;
-        let mut first = true;
-        for (key, value) in sensor_data.data.iter() {
-            if first {
-                write!(payload, " {}={:.2}", key, value)?;
-                first = false;
-            } else {
-                write!(payload, ",{}={:.2}", key, value)?;
-            }
-        }
-    }
-
-    Ok(payload)
 }

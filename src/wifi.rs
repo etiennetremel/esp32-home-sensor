@@ -1,4 +1,3 @@
-use alloc::boxed::Box;
 use embassy_executor::Spawner;
 use embassy_net::{Runner, Stack, StackResources};
 use embassy_time::{Duration, Timer};
@@ -10,7 +9,7 @@ use esp_hal::{
 };
 use esp_wifi::{
     wifi::{ClientConfiguration, Configuration, WifiController, WifiDevice, WifiEvent, WifiState},
-    EspWifiTimerSource,
+    EspWifiController, EspWifiTimerSource,
 };
 
 use core::str::FromStr;
@@ -20,8 +19,8 @@ use static_cell::StaticCell;
 
 use crate::config::CONFIG;
 
-// Network stack and resources
 static RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
+static WIFI: StaticCell<EspWifiController> = StaticCell::new();
 
 pub struct Wifi {
     pub stack: Stack<'static>,
@@ -38,8 +37,8 @@ impl Wifi {
         mut rng: Rng,
         spawner: Spawner,
     ) -> Result<Self, Error> {
-        let init = Box::new(esp_wifi::init(timer, rng, radio_clocks).unwrap());
-        let init = Box::leak(init);
+        let init = esp_wifi::init(timer, rng, radio_clocks).unwrap();
+        let init = WIFI.init(init);
 
         let (controller, interfaces) = esp_wifi::wifi::new(init, wifi).unwrap();
 

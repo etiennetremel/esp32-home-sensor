@@ -1,11 +1,13 @@
 ESP-32 home sensor
 ==================
 
-> ESP32 DevKit v1 home sensor connected via I2C to a BME280 sensor which
-> measure temperature, humidity and pressure. Measurements are sent over MQTTv5
-> to [Mosquitto MQTT broker](https://mosquitto.org) which are then consumed by
-> [Telegraf](https://www.influxdata.com/time-series-platform/telegraf/) and
-> persisted into [InfluxDB](https://www.influxdata.com).
+> ESP32 DevKit v1 home sensor using the UART and I2C protocols. It supports
+> various sensors to measure temperature, humidity and pressure. Such as the
+> BME281, SCD30, SDS011, etc.
+> Measurements are sent over TLS and the MQTTv5 protocol to [Mosquitto MQTT
+> broker][mosquitto] and consumed by [Telegraf][telegraf] to persist into
+> [InfluxDB][influxdb].
+> It also supports over-the-air (OTA) automatic firmware upgrade.
 
 ## Overview
 
@@ -23,6 +25,7 @@ flowchart LR
     InfluxDB(fa:fa-database InfluxDB)
     InfluxDashboards(fa:fa-chart-line Influx<br>Dashboards)
     HomeAssistant(fa:fa-house HomeAssistant)
+    OtaServer(fa:fa-upload<br>OTA Server<br>Firmware update)
 
     subgraph Areas
     direction TB
@@ -46,9 +49,12 @@ flowchart LR
     InfluxDB-->InfluxDashboards
     end
 
+    Outdoor-.Check version.->OtaServer
     Outdoor--Publish-->MQTT
     LivingRoom--Publish-->MQTT
+    LivingRoom-.Check version.->OtaServer
     BedRoom--Publish-->MQTT
+    BedRoom-.Check version.->OtaServer
     MQTT--Subscribe-->Telegraf
     MQTT-.Subscribe.->HomeAssistant
 ```
@@ -59,9 +65,9 @@ flowchart LR
 
 #### Requirements
 
-- [espflash](https://esp-rs.github.io/book/tooling/espflash.html)
-- [espmonitor](https://esp-rs.github.io/book/tooling/espmonitor.html)
-- [espup](https://esp-rs.github.io/book/installation/installation.html#espup)
+- [espflash][espflash]
+- [espmonitor][espmonitor]
+- [espup][espup]
 
 #### Pin-out
 
@@ -96,9 +102,28 @@ mqtt_port = 1883
 mqtt_username = "esp32-outdoor"
 mqtt_password = "someranddompassword"
 mqtt_topic = "sensors"
-measurement_interval_seconds = 300
 location = "outdoor"
-measurement_interval_seconds = 60
+
+# optional
+measurement_interval_seconds = 300
+
+ota_hostname = "my-ota.example.com"
+ota_port = 443
+
+tls_ca = """
+-----BEGIN CERTIFICATE-----
+// your CA certificate here
+-----END CERTIFICATE-----
+"""
+tls_key = """
+-----BEGIN RSA PRIVATE KEY-----
+// your private key here
+-----END RSA PRIVATE KEY-----
+"""
+tls_cert = """
+-----BEGIN CERTIFICATE-----
+// your certificate here
+-----END CERTIFICATE-----
 ```
 
 #### Development
@@ -134,11 +159,12 @@ MQTT message format to use:
 | Feature | Description                       | Default |
 |---------|-----------------------------------|---------|
 | bme280  | Enable BME280 sensor              | yes     |
-| sds011  | Enable SDS011 sensor              | yes     |
-| influx  | Set MQTT payload format to Influx | no      |
-| json    | Set MQTT payload format to Json   | yes     |
-| tls     | Use TLS to connect to the MQTT    | no      |
-| mtls    | Use MTLS to connect to the MQTT   | no      |
+| sds011  | Enable SDS011 sensor              | no      |
+| influx  | Set MQTT payload format to Influx | yes     |
+| json    | Set MQTT payload format to Json   | no      |
+| tls     | Use TLS to connect to the MQTT    | yes     |
+| mtls    | Use MTLS to connect to the MQTT   | yes     |
+| ota     | Use over the air firmware upgrade | ota     |
 
 For example, to only enable BME280 with JSON format:
 
@@ -232,3 +258,43 @@ Refer to the [Home Assistant documentation](./docs/home-assistant.md) for
 details on how to set this up.
 
 ![Home Assistant dashboard](./home-assistant.png)
+
+### Over the Air firmware upgrades (OTA)
+
+OTA (Over-the-Air) refers to remotely updating the firmware or software on a
+device using a wireless connection (like Wi-Fi, cellular, or LoRa). This lets
+you patch bugs, add features, or fix security issues without physically
+accessing the device.
+
+This repository provide an example implementation of OTA using the
+[esp-hal-ota][esp-hal-ota] library. It requires an OTA server to be deployed
+somewhere where each device can download the last firmware from.
+
+Configuration is straight forward, include the hostname and port of the OTA
+server in your configuration:
+
+```toml
+ota_hostname = "my-ota.example.com"
+ota_port = 443
+```
+
+At runtime, the device contacts the OTA server, which responds with the latest
+version, firmware size, and CRC. The device compares the version to its current
+firmware version and downloads and applies the update if there is a version
+mismatch.
+
+```bash
+. $HOME/export-esp.sh
+
+cargo build --release --features influx,bme280,tls,mtls,ota --no-default-features
+espflash save-image --chip esp32 ./target/xtensa-esp32-none-elf/release/esp32_home_sensor ../ota/firmware.bin
+```
+
+<!-- page links -->
+[esp-hal-ota]: https://github.com/filipton/esp-hal-ota/
+[espflash]: https://esp-rs.github.io/book/tooling/espflash.html
+[espmonitor]: https://esp-rs.github.io/book/tooling/espmonitor.html
+[espup]: https://esp-rs.github.io/book/installation/installation.html#espup
+[mosquitto]: https://mosquitto.org
+[telegraf]: https://www.influxdata.com/time-series-platform/telegraf/
+[influxdb]: https://www.influxdata.com

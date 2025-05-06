@@ -1,6 +1,6 @@
 [package]
 name = "esp32_home_sensor"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Etienne Tremel <995474+etiennetremel@users.noreply.github.com>"]
 edition = "2021"
 license = "MIT"
@@ -13,7 +13,7 @@ libscd = { version = "0.5.0", features = ["scd30", "async", "defmt"] }
 embassy-embedded-hal = "0.3.0"
 embassy-executor = { version = "0.7.0", features = [
   "executor-thread",
-  "task-arena-size-24576",
+  "task-arena-size-16384",
 ] }
 embassy-net = { version = "0.6.0", features = [
   "tcp",
@@ -47,6 +47,8 @@ esp-wifi = { version = "0.13.0", default-features = false, features = [
   "esp-alloc",
   "builtin-scheduler",
 ] }
+esp-hal-ota = { version = "0.4.0", features = ["esp32", "log"] }
+esp-storage = { version = "0.5.0", features = ["esp32"] }
 
 heapless = { version = "0.8.0", default-features = false }
 log = "0.4.27"
@@ -70,6 +72,12 @@ opt-level = 3
 [profile.dev.package.xtensa-lx-rt]
 opt-level = 'z'
 
+[profile.dev.package.esp-storage]
+opt-level = 3
+
+[profile.release.package.esp-storage]
+opt-level = 3
+
 [profile.release]
 codegen-units = 1        # LLVM can perform better optimizations using a single thread
 debug = 2
@@ -80,7 +88,7 @@ lto = 'fat'
 overflow-checks = false
 
 [features]
-default = ["influx", "tls", "mtls"]
+default = ["influx", "tls", "mtls", "ota"]
 
 # Dataformat
 influx = []
@@ -94,3 +102,6 @@ sds011 = []
 # TLS
 mtls = []
 tls = []
+
+# OTA automatic firmware update
+ota = []

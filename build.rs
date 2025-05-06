@@ -4,19 +4,21 @@ use serde::Deserialize;
 
 #[derive(Deserialize)]
 struct RawConfig {
-    wifi_ssid: String,
-    wifi_psk: String,
     hostname: String,
     location: String,
+    measurement_interval_seconds: u16,
     mqtt_hostname: String,
-    mqtt_port: u16,
-    mqtt_username: String,
     mqtt_password: String,
+    mqtt_port: u16,
     mqtt_topic: String,
+    mqtt_username: String,
+    ota_hostname: Option<String>,
+    ota_port: Option<u16>,
     tls_ca: Option<String>,
     tls_cert: Option<String>,
     tls_key: Option<String>,
-    measurement_interval_seconds: u16,
+    wifi_psk: String,
+    wifi_ssid: String,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -33,34 +35,38 @@ fn main() -> Result<(), Box<dyn Error>> {
     let code = format!(
         r#"
         pub const CONFIG: Config = Config {{
-            wifi_ssid: {ssid:?},
-            wifi_psk: {psk:?},
             hostname: {host:?},
             location: {loc:?},
+            measurement_interval_seconds: {intv},
             mqtt_hostname: {mh:?},
-            mqtt_port: {mp},
-            mqtt_username: {mu:?},
             mqtt_password: {mpw:?},
+            mqtt_port: {mp},
             mqtt_topic: {mt:?},
+            mqtt_username: {mu:?},
+            ota_hostname: {oh:?},
+            ota_port: {op:?},
             tls_ca: {ca:?},
             tls_cert: {cert:?},
             tls_key: {key:?},
-            measurement_interval_seconds: {intv},
+            wifi_psk: {psk:?},
+            wifi_ssid: {ssid:?},
         }};
     "#,
-        ssid = raw.wifi_ssid,
-        psk = raw.wifi_psk,
+        ca = raw.tls_ca,
+        cert = raw.tls_cert,
         host = raw.hostname,
+        intv = raw.measurement_interval_seconds,
+        key = raw.tls_key,
         loc = raw.location,
         mh = raw.mqtt_hostname,
         mp = raw.mqtt_port,
-        mu = raw.mqtt_username,
         mpw = raw.mqtt_password,
         mt = raw.mqtt_topic,
-        ca = raw.tls_ca,
-        cert = raw.tls_cert,
-        key = raw.tls_key,
-        intv = raw.measurement_interval_seconds
+        mu = raw.mqtt_username,
+        oh = raw.ota_hostname,
+        op = raw.ota_port,
+        psk = raw.wifi_psk,
+        ssid = raw.wifi_ssid,
     );
 
     let out_dir = env::var("OUT_DIR")?;
