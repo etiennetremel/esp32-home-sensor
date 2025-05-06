@@ -151,8 +151,15 @@ async fn main(spawner: Spawner) {
 
 #[embassy_executor::task]
 async fn main_task(mut firmware_update: FirmwareUpdate, mut measurement: Measurement) {
+    let mut update_counter = 0;
+
     loop {
-        if cfg!(feature = "ota") {
+        // Only check for firmware updates periodically
+        if cfg!(feature = "ota")
+            && update_counter
+                >= FIRMWARE_CHECK_INTERVAL / CONFIG.measurement_interval_seconds as u64
+        {
+            update_counter = 0;
             if let Err(e) = firmware_update.check().await {
                 log::error!("Firmware update error: {:?}", e);
                 Timer::after(Duration::from_secs(
@@ -163,8 +170,13 @@ async fn main_task(mut firmware_update: FirmwareUpdate, mut measurement: Measure
             }
         }
 
+        // Take measurements each cycle
         if let Err(e) = measurement.take().await {
             log::error!("Measurement error: {:?}", e);
+        }
+
+        if cfg!(feature = "ota") {
+            update_counter += 1;
         }
 
         Timer::after(Duration::from_secs(

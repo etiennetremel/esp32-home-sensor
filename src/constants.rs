@@ -9,3 +9,5 @@ pub const OTA_CHUNK_BUFFER_SIZE: usize = 1024;
 
 pub const UART_READ_BUFFER_SIZE: usize = 64;
 pub const UART_AT_CMD: u8 = 0xAB;
+
+pub const FIRMWARE_CHECK_INTERVAL: u64 = 3600; // Check once per hour
