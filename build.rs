@@ -4,7 +4,7 @@ use serde::Deserialize;
 
 #[derive(Deserialize)]
 struct RawConfig {
-    hostname: String,
+    device_id: String,
     location: String,
     measurement_interval_seconds: u16,
     mqtt_hostname: String,
@@ -35,7 +35,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let code = format!(
         r#"
         pub const CONFIG: Config = Config {{
-            hostname: {host:?},
+            device_id: {id:?},
             location: {loc:?},
             measurement_interval_seconds: {intv},
             mqtt_hostname: {mh:?},
@@ -54,7 +54,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     "#,
         ca = raw.tls_ca,
         cert = raw.tls_cert,
-        host = raw.hostname,
+        id = raw.device_id,
         intv = raw.measurement_interval_seconds,
         key = raw.tls_key,
         loc = raw.location,

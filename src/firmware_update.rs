@@ -24,6 +24,7 @@ pub struct FirmwareUpdate {
     tls: &'static Tls<'static>,
     rx_buf: &'static Mutex<NoopRawMutex, [u8; RX_BUFFER_SIZE]>,
     tx_buf: &'static Mutex<NoopRawMutex, [u8; TX_BUFFER_SIZE]>,
+    device_id: &'static str,
     ota_hostname: &'static str,
     ota_port: u16,
 }
@@ -40,6 +41,7 @@ impl FirmwareUpdate {
             .map_err(|_| Error::Ota)?
             .ota_mark_app_valid();
 
+        let device_id = CONFIG.device_id;
         let ota_hostname = CONFIG.ota_hostname.ok_or(Error::Config)?;
         let ota_port = CONFIG.ota_port.ok_or(Error::Config)?;
 
@@ -48,6 +50,7 @@ impl FirmwareUpdate {
             tls,
             rx_buf,
             tx_buf,
+            device_id,
             ota_hostname,
             ota_port,
         })
@@ -71,8 +74,9 @@ impl FirmwareUpdate {
         .map_err(|_| Error::Connection)?;
 
         // Use a static string slice for the HTTP request template - optimized for memory
-        const INFO_REQ_PREFIX: &str = "GET /version HTTP/1.1\r\nHost: ";
-        const INFO_REQ_SUFFIX: &str = "\r\nConnection: close\r\n\r\n";
+        const INFO_REQ_PREFIX: &str = "\r\nGET /version?device=";
+        const REQ_PREFIX: &str = " HTTP/1.1\r\nHost: ";
+        const REQ_SUFFIX: &str = "\r\nConnection: close\r\n\r\n";
 
         // Write request in chunks to avoid dynamic allocation
         session
@@ -80,11 +84,19 @@ impl FirmwareUpdate {
             .await
             .map_err(|_| Error::Connection)?;
         session
+            .write_all(self.device_id.as_bytes())
+            .await
+            .map_err(|_| Error::Connection)?;
+        session
+            .write_all(REQ_PREFIX.as_bytes())
+            .await
+            .map_err(|_| Error::Connection)?;
+        session
             .write_all(self.ota_hostname.as_bytes())
             .await
             .map_err(|_| Error::Connection)?;
         session
-            .write_all(INFO_REQ_SUFFIX.as_bytes())
+            .write_all(REQ_SUFFIX.as_bytes())
             .await
             .map_err(|_| Error::Connection)?;
 
@@ -160,20 +172,28 @@ impl FirmwareUpdate {
         .map_err(|_| Error::Connection)?;
 
         // Same approach for firmware request
-        const FIRMWARE_REQ_PREFIX: &str = "GET /firmware HTTP/1.1\r\nHost: ";
+        const FIRMWARE_REQ_PREFIX: &str = "GET /firmware?device=";
 
         session
             .write_all(FIRMWARE_REQ_PREFIX.as_bytes())
             .await
             .map_err(|_| Error::Firmware)?;
         session
+            .write_all(self.device_id.as_bytes())
+            .await
+            .map_err(|_| Error::Connection)?;
+        session
+            .write_all(REQ_PREFIX.as_bytes())
+            .await
+            .map_err(|_| Error::Connection)?;
+        session
             .write_all(self.ota_hostname.as_bytes())
             .await
-            .map_err(|_| Error::Firmware)?;
+            .map_err(|_| Error::Connection)?;
         session
-            .write_all(INFO_REQ_SUFFIX.as_bytes())
+            .write_all(REQ_SUFFIX.as_bytes())
             .await
-            .map_err(|_| Error::Firmware)?;
+            .map_err(|_| Error::Connection)?;
 
         // Reuse buffer for firmware download
         let mut buf = [0u8; OTA_CHUNK_BUFFER_SIZE];

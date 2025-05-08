@@ -151,7 +151,8 @@ async fn main(spawner: Spawner) {
 
 #[embassy_executor::task]
 async fn main_task(mut firmware_update: FirmwareUpdate, mut measurement: Measurement) {
-    let mut update_counter = 0;
+    // check for firmware update at boot time
+    let mut update_counter = FIRMWARE_CHECK_INTERVAL / CONFIG.measurement_interval_seconds as u64;
 
     loop {
         // Only check for firmware updates periodically

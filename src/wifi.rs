@@ -44,7 +44,7 @@ impl Wifi {
 
         // initialize network stack
         let mut dhcp_config = embassy_net::DhcpConfig::default();
-        dhcp_config.hostname = Some(String::<32>::from_str(CONFIG.hostname).unwrap());
+        dhcp_config.hostname = Some(String::<32>::from_str(CONFIG.device_id).unwrap());
 
         let seed = (rng.random() as u64) << 32 | rng.random() as u64;
         let config = embassy_net::Config::dhcpv4(dhcp_config);

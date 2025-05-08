@@ -1,6 +1,6 @@
 pub struct Config {
-    // Device hostname (used on the network and DHCP)
-    pub hostname: &'static str,
+    // Device ID (used as DHCP hostname and passed to the OTA for firmware identification)
+    pub device_id: &'static str,
 
     // Location identifier (used in MQTT payloads)
     pub location: &'static str,
