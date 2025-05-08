@@ -321,7 +321,7 @@ Follow these steps to release new firmware:
    espflash save-image --chip esp32 ./target/xtensa-esp32-none-elf/release/esp32_home_sensor ./firmware.bin
    
    # push to OCI registry
-   oras push my-registry.example.com:443/my-repository/esp32-outdoor:0.1.2 \
+   oras push "my-registry.example.com:443/my-repository/${DEVICE_ID}:0.1.2" \
        --config /dev/null:application/vnd.oci.image.config.v1+json \
        firmware.bin:application/vnd.espressif.esp32.firmware.v1+binary
    ```
