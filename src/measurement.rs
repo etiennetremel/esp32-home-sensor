@@ -56,6 +56,7 @@ impl Measurement {
     pub async fn take(&mut self) -> Result<(), Error> {
         // Measure sensor data first
         let sensor_data = self.sensors.measure().await.map_err(|_| Error::Sensor)?;
+        log::debug!("Sensor data received: {:?}", sensor_data);
 
         // Format MQTT message
         let message = format_mqtt_message(&sensor_data).map_err(|_| Error::Format)?;
@@ -67,7 +68,7 @@ impl Measurement {
         let mut tx_buf = self.tx_buf.lock().await;
 
         // Create transport session
-        let session = Transport::new(
+        let transport = Transport::new(
             *stack_guard,
             self.tls,
             &mut *rx_buf,
@@ -78,25 +79,29 @@ impl Measurement {
         .await
         .map_err(|_| Error::Transport)?;
 
-        // Create MQTT client and publish data
+        // Create MQTT client
         let mut mqtt_rx_buf = self.mqtt_rx_buf.lock().await;
         let mut mqtt_tx_buf = self.mqtt_tx_buf.lock().await;
-        let mut mqtt = Mqtt::new(session, &mut *mqtt_tx_buf, &mut *mqtt_rx_buf)
+        let mut mqtt = Mqtt::new(transport, &mut *mqtt_tx_buf, &mut *mqtt_rx_buf)
             .await
             .map_err(|_| Error::Mqtt)?;
 
+        // Publish MQTT message
         mqtt.send_message(CONFIG.mqtt_topic, message.as_bytes())
             .await
             .map_err(|_| Error::Mqtt)?;
+
+        // Explicitly disconnect
+        mqtt.disconnect().await;
 
         log::info!("MQTT data published successfully");
         Ok(())
     }
 }
 
-fn format_mqtt_message(sensor_data: &SensorData) -> Result<String<128>, core::fmt::Error> {
+fn format_mqtt_message(sensor_data: &SensorData) -> Result<String<256>, core::fmt::Error> {
     use core::fmt::Write;
-    let mut payload: String<128> = String::new();
+    let mut payload: String<256> = String::new();
 
     #[cfg(feature = "json")]
     {

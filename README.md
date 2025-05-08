@@ -158,13 +158,13 @@ MQTT message format to use:
 
 | Feature | Description                       | Default |
 |---------|-----------------------------------|---------|
-| bme280  | Enable BME280 sensor              | yes     |
+| bme280  | Enable BME280 sensor              | no      |
 | sds011  | Enable SDS011 sensor              | no      |
 | influx  | Set MQTT payload format to Influx | yes     |
 | json    | Set MQTT payload format to Json   | no      |
 | tls     | Use TLS to connect to the MQTT    | yes     |
 | mtls    | Use MTLS to connect to the MQTT   | yes     |
-| ota     | Use over the air firmware upgrade | ota     |
+| ota     | Use over the air firmware upgrade | yes     |
 
 For example, to only enable BME280 with JSON format:
 
@@ -175,6 +175,9 @@ cargo espflash flash --release
 
 # enable BME280 with MQTT message in INFLUX format
 cargo espflash flash --release --features influx,bme280 --no-default-features
+
+# if enabling OTA, make sure to include the partitions parameters
+cargo espflash flash --release --features influx,tls,mtls,ota,bme280 --no-default-features -T ./partitions.csv --erase-parts otadata
 ```
 
 #### TLS
@@ -326,13 +329,32 @@ Follow these steps to release new firmware:
        firmware.bin:application/vnd.espressif.esp32.firmware.v1+binary
    ```
 
+**Notes**: when flashing the initial program with OTA support, make sure to include
+the following partitions parameters:
+
+```bash
+cargo espflash flash --release --features influx,tls,mtls,ota,bme280 --no-default-features -T ./partitions.csv --erase-parts otadata
+```
+
+#### OTA server
+
+Refer to the [etiennetremel/otaflux][otaflux] repository for the implementation
+of the OTA server and refer to the [etiennetremel/homie-lab][homie-lab]
+repository for the infrastructure setup.
+
+[OtaFlux][otaflux] is an OTA (Over-the-Air) firmware update server that
+fetches, caches, and serves firmware binaries from an OCI-compatible container
+registry.
+
 <!-- page links -->
 [esp-hal-ota]: https://github.com/filipton/esp-hal-ota/
 [espflash]: https://esp-rs.github.io/book/tooling/espflash.html
 [espmonitor]: https://esp-rs.github.io/book/tooling/espmonitor.html
 [espup]: https://esp-rs.github.io/book/installation/installation.html#espup
-[mosquitto]: https://mosquitto.org
-[telegraf]: https://www.influxdata.com/time-series-platform/telegraf/
-[influxdb]: https://www.influxdata.com
 [harbor]: https://goharbor.io
+[homie-lab]: https://github.com/etiennetremel/homie-lab
+[influxdb]: https://www.influxdata.com
+[mosquitto]: https://mosquitto.org
 [oras]: https://oras.land
+[otaflux]: https://github.com/etiennetremel/otaflux
+[telegraf]: https://www.influxdata.com/time-series-platform/telegraf/

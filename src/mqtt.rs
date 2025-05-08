@@ -43,12 +43,16 @@ impl<'a, T: Read + Write> Mqtt<'a, T> {
     pub async fn send_message(&mut self, topic: &str, message: &[u8]) -> Result<(), Error> {
         if let Err(_) = self
             .client
-            .send_message(topic, message, QualityOfService::QoS0, false)
+            .send_message(topic, message, QualityOfService::QoS1, false)
             .await
         {
             return Err(Error::PublishMessageFailed);
         }
 
         Ok(())
+    }
+
+    pub async fn disconnect(mut self) {
+        let _ = self.client.disconnect().await;
     }
 }

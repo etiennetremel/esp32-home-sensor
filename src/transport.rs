@@ -134,19 +134,21 @@ impl<'a> Transport<'a, TcpSocket<'a>> {
         _tls: &'a Tls<'static>,
         rx_buffer: &'a mut [u8],
         tx_buffer: &'a mut [u8],
+        hostname: &str,
+        port: u16,
     ) -> Result<Self, Error> {
         let mut socket = TcpSocket::new(stack, rx_buffer, tx_buffer);
         socket.set_timeout(Some(Duration::from_secs(30)));
 
         let addr = stack
-            .dns_query(CONFIG.mqtt_hostname, DnsQueryType::A)
+            .dns_query(hostname, DnsQueryType::A)
             .await
             .map_err(|_| Error::DNSLookupFailed)?
             .get(0)
             .copied()
             .ok_or(Error::DNSLookupFailed)?;
         socket
-            .connect((addr, CONFIG.mqtt_port))
+            .connect((addr, port))
             .await
             .map_err(|_| Error::SocketConnectionError)?;
 
