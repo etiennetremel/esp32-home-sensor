@@ -1,13 +1,30 @@
+## Wifi
 wifi_ssid = "my-wifi"
 wifi_psk = "wifi-password"
-hostname = "esp32-outdoor"
+
+## Device ID, used as hostname in the network but also passed to the OTA server
+## as query string when requesting firmware upgrade
+device_id = "esp32-outdoor"
+
+## MQTT
 mqtt_hostname = "homie.local"
 mqtt_port = 1883
 mqtt_username = "esp32-outdoor"
 mqtt_password = "someranddompassword"
 mqtt_topic = "sensors"
+
+## Place where the device is located, e.g. living room, bed room, office, etc.
 location = "outdoor"
+
+## How often to take measurement
 measurement_interval_seconds = 60
+
+## OTA support
+# ota_hostname = "my-ota.example.com"
+# ota_port = 443
+
+## TLS / mTLS setup
+## For TLS, only the CA certificate is required
 # tls_ca = """
 # -----BEGIN CERTIFICATE-----
 # // your CA certificate here
