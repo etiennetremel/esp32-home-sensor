@@ -61,15 +61,13 @@ flowchart LR
 
 ## Getting started
 
-### ESP32
-
-#### Requirements
+### Requirements
 
 - [espflash][espflash]
 - [espmonitor][espmonitor]
 - [espup][espup]
 
-#### Pin-out
+### Pin-out
 
 | Sensor | Pin Sensor  | ESP32 DevKit v1 Pin |
 |--------|-------------|---------------------|
@@ -88,7 +86,41 @@ flowchart LR
 
 Note: I2C devices share the same I2C bus (BME280, SCD30).
 
-#### Configuration
+### Available features
+
+The following Cargo features allow you to enable/disable sensors and select the
+MQTT message format to use:
+
+| Feature | Description                       | Default |
+|---------|-----------------------------------|---------|
+| bme280  | Enable BME280 sensor              | no      |
+| sds011  | Enable SDS011 sensor              | no      |
+| influx  | Set MQTT payload format to Influx | yes     |
+| json    | Set MQTT payload format to Json   | no      |
+| tls     | Use TLS to connect to the MQTT    | yes     |
+| mtls    | Use MTLS to connect to the MQTT   | yes     |
+| ota     | Use over the air firmware upgrade | yes     |
+
+For example, to only enable BME280 with JSON format:
+
+```bash
+. $HOME/export-esp.sh
+# enable BME280, SDS011 with MQTT message in JSON format (default)
+cargo espflash flash --release
+
+# enable BME280 with MQTT message in INFLUX format
+cargo espflash flash --release --features influx,bme280 --no-default-features
+
+# if enabling OTA, make sure to include the partitions parameters
+cargo espflash flash \
+    --release \
+    --features influx,tls,mtls,ota,bme280 \
+    --no-default-features \
+    -T ./partitions.csv \
+    --erase-parts otadata
+```
+
+### Configuration
 
 Before flashing the device, you will need to configure parameters in the
 `./cfg.toml` file, for example:
@@ -126,61 +158,7 @@ tls_cert = """
 -----END CERTIFICATE-----
 ```
 
-#### Development
-
-Connect the device via USB, then run the following command to run flash and
-retrieve logs from the device using espmonitor:
-
-```bash
-espup install
-
-. $HOME/export-esp.sh
-
-cargo run --release
-
-# or run specific features/sensors
-cargo run --release --features json,bme280 --no-default-features
-```
-
-#### Flashing
-
-Connect the device via USB, then flash it with the following command:
-
-```bash
-. $HOME/export-esp.sh
-cargo espflash flash --release
-```
-
-#### Available features
-
-The following Cargo features allow you to enable/disable sensors and select the
-MQTT message format to use:
-
-| Feature | Description                       | Default |
-|---------|-----------------------------------|---------|
-| bme280  | Enable BME280 sensor              | no      |
-| sds011  | Enable SDS011 sensor              | no      |
-| influx  | Set MQTT payload format to Influx | yes     |
-| json    | Set MQTT payload format to Json   | no      |
-| tls     | Use TLS to connect to the MQTT    | yes     |
-| mtls    | Use MTLS to connect to the MQTT   | yes     |
-| ota     | Use over the air firmware upgrade | yes     |
-
-For example, to only enable BME280 with JSON format:
-
-```bash
-. $HOME/export-esp.sh
-# enable BME280, SDS011 with MQTT message in JSON format (default)
-cargo espflash flash --release
-
-# enable BME280 with MQTT message in INFLUX format
-cargo espflash flash --release --features influx,bme280 --no-default-features
-
-# if enabling OTA, make sure to include the partitions parameters
-cargo espflash flash --release --features influx,tls,mtls,ota,bme280 --no-default-features -T ./partitions.csv --erase-parts otadata
-```
-
-#### TLS
+### TLS
 
 To enable `TLS` (mqtts), update the `cfg.toml` config to include the CA certificate:
 
@@ -197,7 +175,7 @@ Then make sure to enable the `tls` feature when you flash:
 cargo run --release --features influx,bme280,tls --no-default-features
 ```
 
-#### mTLS
+### mTLS
 
 To enable `mTLS`, update the `cfg.toml` config to include the CA, client
 certificate and private key:
@@ -224,9 +202,36 @@ Then make sure to enable both `tls` and `mtls` features when you flash:
 cargo run --release --features influx,bme280,tls,mtls --no-default-features
 ```
 
-### Setup infrastructure using Docker
+## Development
 
-Docker compose is used to setup the infrastructure. It is composed of 4 services:
+Connect the device via USB, then run the following command to run flash and
+retrieve logs from the device using espmonitor:
+
+```bash
+espup install
+
+. $HOME/export-esp.sh
+
+cargo run --release
+
+# or run specific features/sensors
+cargo run --release --features json,bme280 --no-default-features
+```
+
+## Flashing
+
+Connect the device via USB, then flash it with the following command:
+
+```bash
+. $HOME/export-esp.sh
+cargo espflash flash --release
+```
+
+## Infrastructure deployment
+
+## Docker Compose
+
+Docker Compose is used to setup the infrastructure. It is composed of 4 services:
 
 - InfluxDB - persistent storage and basic dash-boarding
 - Mosquitto - MQTT broker
@@ -252,109 +257,33 @@ dashboard into InfluxDB.
 
 ![InfluxDB dashboard](./dashboard.png)
 
+### Kubernetes
+
+Alternative deployment solution with Talos and Kubernetes can be found in the
+[etiennetremel/homie-lab][homie-lab] repository.
+
 ### Setup Home Assistant or other providers
 
 It's possible to change the payload format of the MQTT message to JSON instead
 of Influx by using the `--features json`.
 
-Refer to the [Home Assistant documentation](./docs/home-assistant.md) for
-details on how to set this up.
+Refer to the [Home Assistant documentation][home-assistant] for details on how
+to set this up.
 
 ![Home Assistant dashboard](./home-assistant.png)
 
-### Over the Air firmware upgrades (OTA)
+## Over the Air firmware upgrades (OTA)
 
-Over-the-Air (OTA) updates refer to the process of remotely updating the
-firmware or software on a device using a wireless connection, such as Wi-Fi,
-cellular, or LoRa. This method allows you to patch bugs, add new features, or
-fix security vulnerabilities without needing physical access to the device.
-
-This repository provides an example implementation of OTA updates using the
-[esp-hal-ota][esp-hal-ota] library. To utilize this, an OTA server must be
-deployed where each device can download the latest firmware.
-
-Configuring the OTA server is straightforward. Include the hostname and port of
-the OTA server in your configuration file as follows:
-
-```toml
-ota_hostname = "my-ota.example.com"
-ota_port = 443
-```
-
-During runtime, the device will contact the OTA server, which will respond with
-the latest firmware version, size, and CRC. The device will then compare this
-version with its current firmware version. If there is a version mismatch, the
-device will download and apply the update.
-
-#### Releasing new firmware through OTA
-
-For this example, we compile the code into a binary and push it using
-[Oras][oras] to an OCI registry (in this case, [Harbor][harbor]).
-
-Since secrets and configurations are embedded into the binary, you will need to
-create a separate repository for each ESP32 board.
-
-Follow these steps to release new firmware:
-
-1. **Update the Package Version:**
-   Bump the package version in the `Cargo.toml` file. For example:
-   ```toml
-   [package]
-   name = "esp32_home_sensor"
-   version = "0.1.2"
-   ```
-   *Note: The package version is used by the chip to determine if its firmware
-   needs to be updated when querying the OTA server for the latest changes.*
-2. **Modify configuration**
-   Update the `cfg.toml` file with the correct configuration for the ESP32.
-3. **Build, Save, and Push the Image:**
-   Execute the following commands to compile, save the image, and push it to
-   the OCI registry:
-   ```bash
-   . $HOME/export-esp.sh
-   
-   # this is used to push to the registry, it should match the one defined in
-   # the cfg.toml
-   export DEVICE_ID=esp32-outdoor
-   
-   # compile
-   cargo build --release --features influx,bme280,tls,mtls,ota --no-default-features
-   
-   # save as binary image
-   espflash save-image --chip esp32 ./target/xtensa-esp32-none-elf/release/esp32_home_sensor ./firmware.bin
-   
-   # push to OCI registry
-   oras push "my-registry.example.com:443/my-repository/${DEVICE_ID}:0.1.2" \
-       --config /dev/null:application/vnd.oci.image.config.v1+json \
-       firmware.bin:application/vnd.espressif.esp32.firmware.v1+binary
-   ```
-
-**Notes**: when flashing the initial program with OTA support, make sure to include
-the following partitions parameters:
-
-```bash
-cargo espflash flash --release --features influx,tls,mtls,ota,bme280 --no-default-features -T ./partitions.csv --erase-parts otadata
-```
-
-#### OTA server
-
-Refer to the [etiennetremel/otaflux][otaflux] repository for the implementation
-of the OTA server and refer to the [etiennetremel/homie-lab][homie-lab]
-repository for the infrastructure setup.
-
-[OtaFlux][otaflux] is an OTA (Over-the-Air) firmware update server that
-fetches, caches, and serves firmware binaries from an OCI-compatible container
-registry.
+Refer to the [Over-the-Air firmware upgrades documentation][ota] for details on
+how to use it.
 
 <!-- page links -->
-[esp-hal-ota]: https://github.com/filipton/esp-hal-ota/
 [espflash]: https://esp-rs.github.io/book/tooling/espflash.html
 [espmonitor]: https://esp-rs.github.io/book/tooling/espmonitor.html
 [espup]: https://esp-rs.github.io/book/installation/installation.html#espup
-[harbor]: https://goharbor.io
+[home-assistant]: ./docs/home-assistant.md
 [homie-lab]: https://github.com/etiennetremel/homie-lab
 [influxdb]: https://www.influxdata.com
 [mosquitto]: https://mosquitto.org
-[oras]: https://oras.land
-[otaflux]: https://github.com/etiennetremel/otaflux
+[ota]: ./docs/ota-firmware-upgrade.md
 [telegraf]: https://www.influxdata.com/time-series-platform/telegraf/
