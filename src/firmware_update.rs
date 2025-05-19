@@ -36,7 +36,7 @@ impl FirmwareUpdate {
         rx_buf: &'static Mutex<NoopRawMutex, [u8; RX_BUFFER_SIZE]>,
         tx_buf: &'static Mutex<NoopRawMutex, [u8; TX_BUFFER_SIZE]>,
     ) -> Result<Self, Error> {
-        // Mark app valid on startup - no separate function call needed
+        // Mark app valid on startup, no separate function call needed
         let _ = Ota::new(FlashStorage::new())
             .map_err(|_| Error::Ota)?
             .ota_mark_app_valid();
@@ -73,7 +73,8 @@ impl FirmwareUpdate {
         .await
         .map_err(|_| Error::Connection)?;
 
-        // Use a static string slice for the HTTP request template - optimized for memory
+        // Use a static string slice for the HTTP request template (optimized
+        // for memory)
         const INFO_REQ_PREFIX: &str = "\r\nGET /version?device=";
         const REQ_PREFIX: &str = " HTTP/1.1\r\nHost: ";
         const REQ_SUFFIX: &str = "\r\nConnection: close\r\n\r\n";
@@ -223,7 +224,7 @@ impl FirmwareUpdate {
 
         let body_start = body_start.ok_or(Error::Firmware)?;
 
-        // Initialize OTA once with proper error handling
+        // Initialize OTA
         let mut ota = Ota::new(FlashStorage::new()).map_err(|_| Error::Ota)?;
         ota.ota_begin(size as u32, crc32).map_err(|_| Error::Ota)?;
 
