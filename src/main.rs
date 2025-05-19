@@ -88,11 +88,17 @@ async fn main(spawner: Spawner) {
         let i2c_bus = I2C_BUS.init(i2c_bus);
 
         if cfg!(feature = "bme280") {
-            sensors.new_bme280(I2cDevice::new(i2c_bus)).await.unwrap();
+            if let Err(_) = sensors.new_bme280(I2cDevice::new(i2c_bus)).await {
+                log::error!("Failed initializing BME280. Rebooting...");
+                esp_hal::system::software_reset();
+            }
         }
 
         if cfg!(feature = "scd30") {
-            sensors.new_scd30(I2cDevice::new(i2c_bus)).await.unwrap();
+            if let Err(_) = sensors.new_scd30(I2cDevice::new(i2c_bus)).await {
+                log::error!("Failed initializing SCD30. Rebooting...");
+                esp_hal::system::software_reset();
+            }
         }
     }
 
@@ -114,7 +120,10 @@ async fn main(spawner: Spawner) {
 
         uart.set_at_cmd(hal::uart::AtCmdConfig::default().with_cmd_char(UART_AT_CMD));
 
-        sensors.new_sds011(uart).await.unwrap();
+        if let Err(_) = sensors.new_sds011(uart).await {
+            log::error!("Failed initializing SDS011. Rebooting...");
+            esp_hal::system::software_reset();
+        }
     }
 
     let wifi = Wifi::new(
