@@ -61,7 +61,6 @@ Follow these steps to release new firmware:
    
    # push to OCI registry
    oras push "my-registry.example.com:443/my-repository/${DEVICE_ID}:0.1.2" \
-       --config /dev/null:application/vnd.oci.image.config.v1+json \
        firmware.bin:application/vnd.espressif.esp32.firmware.v1+binary
    ```
 

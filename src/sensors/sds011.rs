@@ -21,7 +21,7 @@ impl<S: Read + Write> Sds011<S> {
                     id1: 0xFF,
                     id2: 0xFF,
                 },
-                mode: Sds011DeviceMode::Passive,
+                mode: Sds011DeviceMode::Active,
             },
         );
 

@@ -6,7 +6,7 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
-sds011-nostd-rs = "0.1.1"
+sds011-nostd-rs = "0.3.0"
 bme280-rs = "0.3.0"
 libscd = { version = "0.5.0", features = ["scd30", "async", "defmt"] }
 
