@@ -37,7 +37,7 @@ pub fn build_trimmed_c_str_vec(s: &str) -> Vec<u8, TLS_BUFFER_MAX> {
     let trimmed = s.trim_matches('\n');
     let len = trimmed.len();
     assert!(
-        len + 1 <= TLS_BUFFER_MAX,
+        len < TLS_BUFFER_MAX,
         "input ({} bytes) exceeds TLS_BUFFER_MAX",
         len
     );

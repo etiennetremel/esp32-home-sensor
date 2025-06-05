@@ -19,15 +19,11 @@ pub enum Error {
     CACertificateMissing,
     ClientCertificateMissing,
     ClientPrivateKeyMissing,
-    #[allow(dead_code)]
     DNSQueryFailed(DNSError),
     DNSLookupFailed,
     HostnameCstrConversionError,
-    #[allow(dead_code)]
     SocketConnectionError(ConnectError),
-    #[allow(dead_code)]
     TLSSessionFailed(TlsError),
-    #[allow(dead_code)]
     TLSHandshakeFailed(TlsError),
 }
 
@@ -56,14 +52,14 @@ impl<'a> Transport<'a, Session<'a, TcpSocket<'a>>> {
         let addr = stack
             .dns_query(hostname, DnsQueryType::A)
             .await
-            .map_err(|e| Error::DNSQueryFailed(e))?
-            .get(0)
+            .map_err(Error::DNSQueryFailed)?
+            .first()
             .copied()
             .ok_or(Error::DNSLookupFailed)?;
         socket
             .connect((addr, port))
             .await
-            .map_err(|e| Error::SocketConnectionError(e))?;
+            .map_err(Error::SocketConnectionError)?;
 
         let ca_chain = if let Some(ca_chain) = CONFIG.tls_ca {
             ca_chain
@@ -113,12 +109,9 @@ impl<'a> Transport<'a, Session<'a, TcpSocket<'a>>> {
             certificates,
             tls.reference(),
         )
-        .map_err(|e| Error::TLSSessionFailed(e))?;
+        .map_err(Error::TLSSessionFailed)?;
 
-        session
-            .connect()
-            .await
-            .map_err(|e| Error::TLSHandshakeFailed(e))?;
+        session.connect().await.map_err(Error::TLSHandshakeFailed)?;
 
         Ok(Self {
             session,

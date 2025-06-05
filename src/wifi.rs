@@ -3,7 +3,6 @@ use embassy_net::{Runner, Stack, StackResources};
 use embassy_time::{Duration, Timer};
 
 use esp_hal::{
-    peripheral::Peripheral,
     peripherals::{RADIO_CLK, WIFI},
     rng::Rng,
 };
@@ -31,9 +30,9 @@ pub enum Error {}
 
 impl Wifi {
     pub async fn new(
-        wifi: WIFI,
-        timer: impl Peripheral<P = impl EspWifiTimerSource> + 'static,
-        radio_clocks: RADIO_CLK,
+        wifi: WIFI<'static>,
+        timer: impl EspWifiTimerSource + 'static,
+        radio_clocks: RADIO_CLK<'static>,
         mut rng: Rng,
         spawner: Spawner,
     ) -> Result<Self, Error> {
@@ -96,8 +95,8 @@ async fn connection(mut controller: WifiController<'static>) {
         if !matches!(controller.is_started(), Ok(true)) {
             info!("Connecting to wifi with SSID: {:?}", CONFIG.wifi_ssid);
             let client_config = Configuration::Client(ClientConfiguration {
-                ssid: CONFIG.wifi_ssid.try_into().unwrap(),
-                password: CONFIG.wifi_psk.try_into().unwrap(),
+                ssid: CONFIG.wifi_ssid.into(),
+                password: CONFIG.wifi_psk.into(),
                 ..Default::default()
             });
             controller.set_configuration(&client_config).unwrap();

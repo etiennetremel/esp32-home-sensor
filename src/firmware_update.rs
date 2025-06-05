@@ -249,11 +249,11 @@ impl FirmwareUpdate {
                 esp_hal::system::software_reset();
             } else {
                 log::error!("Failed to finalize OTA.");
-                return Err(Error::Ota);
+                Err(Error::Ota)
             }
         } else {
             log::error!("CRC mismatch after flash!");
-            return Err(Error::Ota);
+            Err(Error::Ota)
         }
     }
 }

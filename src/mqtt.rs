@@ -33,7 +33,7 @@ impl<'a, T: Read + Write> Mqtt<'a, T> {
         let mut client =
             MqttClient::<T, 5, CountingRng>::new(transport, tx_buffer, 256, rx_buffer, 256, config);
 
-        if let Err(_) = client.connect_to_broker().await {
+        if (client.connect_to_broker().await).is_err() {
             return Err(Error::ConnectionFailed);
         }
 
@@ -41,10 +41,11 @@ impl<'a, T: Read + Write> Mqtt<'a, T> {
     }
 
     pub async fn send_message(&mut self, topic: &str, message: &[u8]) -> Result<(), Error> {
-        if let Err(_) = self
+        if (self
             .client
             .send_message(topic, message, QualityOfService::QoS1, false)
-            .await
+            .await)
+            .is_err()
         {
             return Err(Error::PublishMessageFailed);
         }
