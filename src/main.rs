@@ -50,6 +50,8 @@ static STACK: StaticCell<Mutex<NoopRawMutex, Stack<'static>>> = StaticCell::new(
 static RX_BUF: StaticCell<Mutex<NoopRawMutex, [u8; RX_BUFFER_SIZE]>> = StaticCell::new();
 static TX_BUF: StaticCell<Mutex<NoopRawMutex, [u8; TX_BUFFER_SIZE]>> = StaticCell::new();
 
+esp_bootloader_esp_idf::esp_app_desc!();
+
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
     init_logger(log::LevelFilter::Info);
@@ -58,7 +60,8 @@ async fn main(spawner: Spawner) {
 
     let rng = Rng::new(peripherals.RNG);
 
-    esp_alloc::heap_allocator!(size: HEAP_SIZE);
+    esp_alloc::heap_allocator!(size: HEAP_DRAM_SIZE);
+    esp_alloc::heap_allocator!(#[unsafe(link_section = ".dram2_uninit")] size: HEAP_PSRAM_SIZE);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     let timg1 = TimerGroup::new(peripherals.TIMG1);

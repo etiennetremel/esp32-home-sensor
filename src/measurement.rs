@@ -108,8 +108,7 @@ fn format_mqtt_message(sensor_data: &SensorData) -> Result<String<256>, core::fm
         write!(
             payload,
             "{{\"location\": \"{}\",\"firmware\": \"{}\"",
-            CONFIG.location,
-            env!("CARGO_PKG_VERSION")
+            CONFIG.location, VERSION,
         )?;
         for (key, value) in sensor_data.data.iter() {
             write!(payload, ", \"{}\": \"{:.2}\"", key, value)?;
@@ -122,8 +121,7 @@ fn format_mqtt_message(sensor_data: &SensorData) -> Result<String<256>, core::fm
         write!(
             payload,
             "weather,location={},firmware={}",
-            CONFIG.location,
-            env!("CARGO_PKG_VERSION")
+            CONFIG.location, VERSION,
         )?;
         let mut first = true;
         for (key, value) in sensor_data.data.iter() {

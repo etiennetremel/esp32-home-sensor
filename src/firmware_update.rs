@@ -1,3 +1,4 @@
+use alloc::format;
 use embassy_net::Stack;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embassy_time::Timer;
@@ -101,7 +102,6 @@ impl FirmwareUpdate {
             .await
             .map_err(|_| Error::Connection)?;
 
-        // Use a single buffer for all operations
         let mut buf = [0u8; 256];
         let mut total_read = 0;
         let mut body_start = None;
@@ -135,14 +135,13 @@ impl FirmwareUpdate {
         let mut lines = info_body.split(|&b| b == b'\n');
 
         // Version check with current version defined in Cargo package
-        let version =
+        let remote_version =
             core::str::from_utf8(lines.next().ok_or(Error::Info)?).map_err(|_| Error::Info)?;
-        let current_version = env!("CARGO_PKG_VERSION");
 
-        if version == current_version {
+        if remote_version == VERSION {
             log::info!(
                 "Already running latest version {}. Skipping update.",
-                current_version
+                VERSION
             );
             return Ok(());
         }
@@ -153,7 +152,7 @@ impl FirmwareUpdate {
 
         log::info!(
             "OTA: server reports version={}, crc32={:#x}, size={}",
-            version,
+            remote_version,
             crc32,
             size
         );
@@ -196,8 +195,7 @@ impl FirmwareUpdate {
             .await
             .map_err(|_| Error::Connection)?;
 
-        // Reuse buffer for firmware download
-        let mut buf = [0u8; OTA_CHUNK_BUFFER_SIZE];
+        let mut buf = [0u8; 256];
         let mut total_read = 0;
         let mut body_start = None;
 
@@ -238,7 +236,7 @@ impl FirmwareUpdate {
         }
 
         // Process firmware in chunks
-        process_firmware_chunks(&mut session, &mut ota, &mut buf, size, bytes_written).await?;
+        download_firmware(&mut session, &mut ota, size, bytes_written).await?;
 
         // Verify and finalize
         if ota.ota_verify().map_err(|_| Error::Ota)? {
@@ -267,49 +265,55 @@ fn parse_number<T: core::str::FromStr>(bytes: &[u8]) -> Result<T, Error> {
         .map_err(|_| Error::Info)
 }
 
-// Extract firmware processing into a separate function
-async fn process_firmware_chunks<R: Read + Write>(
+// Download firmware
+async fn download_firmware<R: Read + Write>(
     session: &mut R,
     ota: &mut Ota<FlashStorage>,
-    buf: &mut [u8],
     size: usize,
     mut bytes_written: usize,
 ) -> Result<(), Error>
 where
     R::Error: core::fmt::Debug,
 {
-    while bytes_written < size {
-        let to_read = (size - bytes_written).min(buf.len());
-        let buf_slice = &mut buf[..to_read];
-        let mut read_off = 0;
+    let mut chunk_buf = [0u8; OTA_CHUNK_BUFFER_SIZE];
+    loop {
+        let n = session.read(&mut chunk_buf).await;
 
-        // Read as much as possible
-        while read_off < to_read {
-            match session.read(&mut buf_slice[read_off..]).await {
-                Ok(0) => break, // EOF
-                Ok(n) => read_off += n,
-                Err(e) => {
+        match n {
+            Ok(0) => {
+                // EOF - normal end of transmission
+                log::debug!("EOF reached, firmware download complete");
+                break;
+            }
+            Ok(bytes_read) => {
+                ota.ota_write_chunk(&chunk_buf[..bytes_read])
+                    .map_err(|_| Error::Ota)?;
+                bytes_written += bytes_read;
+
+                // Log progress
+                if size > 0 && bytes_written % (size / 10) < OTA_CHUNK_BUFFER_SIZE {
+                    log::info!("Progress: {}%", (bytes_written * 100) / size);
+                }
+            }
+            Err(e) => {
+                // Check if this is an EOF-related error
+                let error_str = format!("{:?}", e);
+                if error_str.contains("Eof") || error_str.contains("EOF") {
+                    log::debug!("EOF error encountered: {:?}", e);
+                    break;
+                } else {
                     log::error!("Error reading firmware chunk: {:?}", e);
                     return Err(Error::Firmware);
                 }
             }
         }
-
-        if read_off == 0 {
-            break;
-        }
-
-        // Write chunk to flash
-        ota.ota_write_chunk(&buf_slice[..read_off])
-            .map_err(|_| Error::Ota)?;
-
-        bytes_written += read_off;
-
-        // Log progress every 10%
-        if bytes_written % (size / 10) < buf.len() {
-            log::info!("Progress: {}%", (bytes_written * 100) / size);
-        }
     }
+
+    log::info!(
+        "Firmware download complete: {} bytes written (expected {})",
+        bytes_written,
+        size
+    );
 
     Ok(())
 }

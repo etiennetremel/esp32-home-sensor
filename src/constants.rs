@@ -1,13 +1,18 @@
-/// Size of the heap allocated for the application (110KB)
-pub const HEAP_SIZE: usize = 110 * 1024;
+/// Current firmware version
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Size of the heap in DRAM (internal memory)
+pub const HEAP_DRAM_SIZE: usize = 72 * 1024;
+/// Size of the heap in PSRAM (external memory)
+pub const HEAP_PSRAM_SIZE: usize = 64 * 1024;
 
 /// Size of the TCP socket receive buffer for encrypted data
-pub const RX_BUFFER_SIZE: usize = 2048;
+pub const RX_BUFFER_SIZE: usize = 4096;
 /// Size of the TCP socket transmit buffer for encrypted data
-pub const TX_BUFFER_SIZE: usize = 2048;
+pub const TX_BUFFER_SIZE: usize = 4096;
 
 /// Maximum size for TLS processing buffer (for TLS records)
-pub const TLS_BUFFER_MAX: usize = 2048;
+pub const TLS_BUFFER_MAX: usize = 4096;
 
 /// Size of the MQTT client receive buffer for application data
 pub const MQTT_RX_BUFFER_SIZE: usize = 1024;
@@ -15,7 +20,7 @@ pub const MQTT_RX_BUFFER_SIZE: usize = 1024;
 pub const MQTT_TX_BUFFER_SIZE: usize = 1024;
 
 /// Buffer size for OTA firmware update chunks
-pub const OTA_CHUNK_BUFFER_SIZE: usize = 1024;
+pub const OTA_CHUNK_BUFFER_SIZE: usize = 2048;
 
 /// Buffer size for UART read operations (for SDS011 sensor)
 pub const UART_READ_BUFFER_SIZE: usize = 64;

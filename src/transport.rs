@@ -1,3 +1,4 @@
+use alloc::format;
 use core::marker::PhantomData;
 use embassy_net::tcp::ConnectError;
 use embassy_net::{
@@ -6,7 +7,7 @@ use embassy_net::{
     Stack,
 };
 use embassy_time::Duration;
-use embedded_io_async::{ErrorType, Read, ReadExactError, Write};
+use embedded_io_async::{ErrorType, Read, Write};
 use esp_mbedtls::{asynch::Session, Certificates, Mode, Tls, TlsError, TlsVersion::Tls1_2, X509};
 
 use crate::config::CONFIG;
@@ -19,12 +20,12 @@ pub enum Error {
     CACertificateMissing,
     ClientCertificateMissing,
     ClientPrivateKeyMissing,
-    DNSQueryFailed(DNSError),
     DNSLookupFailed,
+    DNSQueryFailed(DNSError),
     HostnameCstrConversionError,
     SocketConnectionError(ConnectError),
-    TLSSessionFailed(TlsError),
     TLSHandshakeFailed(TlsError),
+    TLSSessionFailed(TlsError),
 }
 
 /// Wrap Transport (plain TCP or a TLS session)
@@ -169,6 +170,12 @@ where
             match self.session.read(buf).await {
                 Ok(n) => return Ok(n),
                 Err(e) => {
+                    // Check if this is an EOF-related error that shouldn't be retried
+                    if is_eof_error(&e) {
+                        log::debug!("EOF encountered, not retrying: {:?}", e);
+                        return Err(e);
+                    }
+
                     log::warn!("read attempt {} failed: {:?}", attempt + 1, e);
                     if attempt + 1 == MAX_RETRIES {
                         return Err(e);
@@ -178,29 +185,16 @@ where
         }
         unreachable!()
     }
+}
 
-    async fn read_exact(&mut self, mut buf: &mut [u8]) -> Result<(), ReadExactError<S::Error>> {
-        while !buf.is_empty() {
-            let mut retry = 0;
-            loop {
-                match self.session.read(buf).await {
-                    Ok(0) => return Err(ReadExactError::UnexpectedEof),
-                    Ok(n) => {
-                        buf = &mut buf[n..];
-                        break;
-                    }
-                    Err(e) => {
-                        retry += 1;
-                        log::warn!("read_exact attempt {} failed: {:?}", retry, e);
-                        if retry >= MAX_RETRIES {
-                            return Err(ReadExactError::Other(e));
-                        }
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
+// Helper function to identify EOF-related errors
+// You'll need to adapt this based on your specific error types
+fn is_eof_error<E: core::fmt::Debug>(error: &E) -> bool {
+    let error_str = format!("{:?}", error);
+    error_str.contains("Eof")
+        || error_str.contains("UnexpectedEof")
+        || error_str.contains("ConnectionClosed")
+        || error_str.contains("BrokenPipe")
 }
 
 impl<'a, S> Write for Transport<'a, S>
