@@ -1,5 +1,5 @@
 [target.xtensa-esp32-none-elf]
-runner = "espflash flash --monitor -T ./partitions.csv --erase-parts otadata"
+runner = "espflash flash --monitor --partition-table ./partitions.csv --erase-parts otadata"
 
 [build]
 rustflags = [
