@@ -148,9 +148,9 @@ tls_ca = """
 -----END CERTIFICATE-----
 """
 tls_key = """
------BEGIN RSA PRIVATE KEY-----
+-----BEGIN EC PRIVATE KEY-----
 // your private key here
------END RSA PRIVATE KEY-----
+-----END EC PRIVATE KEY-----
 """
 tls_cert = """
 -----BEGIN CERTIFICATE-----
@@ -187,9 +187,9 @@ tls_ca = """
 -----END CERTIFICATE-----
 """
 tls_key = """
------BEGIN RSA PRIVATE KEY-----
+-----BEGIN EC PRIVATE KEY-----
 // your private key here
------END RSA PRIVATE KEY-----
+-----END EC PRIVATE KEY-----
 """
 tls_cert = """
 -----BEGIN CERTIFICATE-----
