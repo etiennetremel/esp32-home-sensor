@@ -189,7 +189,7 @@ impl<'a> Transport<'a, TcpSocket<'a>> {
         socket
             .connect((addr, port))
             .await
-            .map_err(|_| Error::SocketConnectionError(ConnectError::ConnectionReset))?;
+            .map_err(Error::SocketConnectionError)?;
 
         Ok(Self {
             session: socket,

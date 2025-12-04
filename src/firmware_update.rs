@@ -380,14 +380,23 @@ impl<'a> FirmwareUpdate<'a> {
         );
 
         if bytes_written != size {
-             log::error!("Size mismatch!");
-             return Err(Error::Firmware);
+            log::error!(
+                "Size mismatch: wrote {} bytes, expected {}",
+                bytes_written,
+                size
+            );
+            return Err(Error::Firmware);
         }
 
         // Finalize
-        ota.activate_next_partition().map_err(|_| Error::Ota)?;
-        ota.set_current_ota_state(OtaImageState::New)
-            .map_err(|_| Error::Ota)?;
+        ota.activate_next_partition().map_err(|e| {
+            log::error!("Failed to activate next partition: {:?}", e);
+            Error::Ota
+        })?;
+        ota.set_current_ota_state(OtaImageState::New).map_err(|e| {
+            log::error!("Failed to set OTA state to New: {:?}", e);
+            Error::Ota
+        })?;
 
         log::info!("OTA complete. Rebooting...");
         Timer::after(embassy_time::Duration::from_millis(1_000)).await;
