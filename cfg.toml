@@ -31,9 +31,9 @@ measurement_interval_seconds = 60
 # -----END CERTIFICATE-----
 # """
 # tls_key = """
-# -----BEGIN RSA PRIVATE KEY-----
+# -----BEGIN EC PRIVATE KEY-----
 # // your private key here
-# -----END RSA PRIVATE KEY-----
+# -----END EC PRIVATE KEY-----
 # """
 # tls_cert = """
 # -----BEGIN CERTIFICATE-----
