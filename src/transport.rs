@@ -1,4 +1,6 @@
 use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
 use core::marker::PhantomData;
 use embassy_net::tcp::ConnectError;
 use embassy_net::{
@@ -7,11 +9,13 @@ use embassy_net::{
     Stack,
 };
 use embassy_time::Duration;
-use embedded_io_async::{ErrorType, Read, Write};
-use esp_mbedtls::{asynch::Session, Certificates, Mode, Tls, TlsError, TlsVersion::Tls1_2, X509};
+use embedded_io_async::{ErrorType, Read, ReadExactError, Write};
+use embedded_tls::{Aes128GcmSha256, TlsConfig, TlsConnection, TlsContext, UnsecureProvider};
+#[cfg(feature = "mtls")]
+use p256::elliptic_curve::SecretKey;
+use rand_core::{CryptoRng, RngCore};
 
 use crate::config::CONFIG;
-use crate::cstr::{build_trimmed_c_str_vec, write_trimmed_c_str};
 
 const MAX_RETRIES: usize = 3;
 
@@ -20,12 +24,17 @@ pub enum Error {
     CACertificateMissing,
     ClientCertificateMissing,
     ClientPrivateKeyMissing,
-    DNSLookupFailed,
+    #[allow(dead_code)]
     DNSQueryFailed(DNSError),
+    DNSLookupFailed,
     HostnameCstrConversionError,
+    #[allow(dead_code)]
     SocketConnectionError(ConnectError),
-    TLSHandshakeFailed(TlsError),
-    TLSSessionFailed(TlsError),
+    #[allow(dead_code)]
+    TLSSessionFailed,
+    #[allow(dead_code)]
+    TLSHandshakeFailed,
+    PEMParseError,
 }
 
 /// Wrap Transport (plain TCP or a TLS session)
@@ -38,15 +47,20 @@ where
 }
 
 #[cfg(feature = "tls")]
-impl<'a> Transport<'a, Session<'a, TcpSocket<'a>>> {
-    pub async fn new(
+impl<'a> Transport<'a, TlsConnection<'a, TcpSocket<'a>, Aes128GcmSha256>> {
+    pub async fn new<RNG>(
         stack: Stack<'static>,
-        tls: &'a Tls<'static>,
+        rng: &mut RNG,
         rx_buffer: &'a mut [u8],
         tx_buffer: &'a mut [u8],
+        tls_read_buffer: &'a mut [u8],
+        tls_write_buffer: &'a mut [u8],
         hostname: &str,
         port: u16,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, Error>
+    where
+        RNG: CryptoRng + RngCore,
+    {
         let mut socket = TcpSocket::new(stack, rx_buffer, tx_buffer);
         socket.set_timeout(Some(Duration::from_secs(30)));
 
@@ -57,10 +71,13 @@ impl<'a> Transport<'a, Session<'a, TcpSocket<'a>>> {
             .first()
             .copied()
             .ok_or(Error::DNSLookupFailed)?;
+
+        log::info!("Connecting TCP socket to {}:{}", hostname, port);
         socket
             .connect((addr, port))
             .await
             .map_err(Error::SocketConnectionError)?;
+        log::info!("TCP connected");
 
         let ca_chain = if let Some(ca_chain) = CONFIG.tls_ca {
             ca_chain
@@ -68,83 +85,111 @@ impl<'a> Transport<'a, Session<'a, TcpSocket<'a>>> {
             return Err(Error::CACertificateMissing);
         };
 
-        let tls_cert = if let Some(tls_cert) = CONFIG.tls_cert {
-            tls_cert
-        } else {
-            return Err(Error::ClientCertificateMissing);
-        };
+        let ca_der = decode_pem(ca_chain)?;
+        let mut _client_cert_der = Vec::new();
+        let mut _client_key_der = Vec::new();
 
-        let tls_key = if let Some(tls_key) = CONFIG.tls_key {
-            tls_key
-        } else {
-            return Err(Error::ClientPrivateKeyMissing);
-        };
+        let mut config = TlsConfig::new().with_server_name(hostname);
+        config = config.with_ca(embedded_tls::Certificate::X509(&ca_der));
+        log::info!("CA certificate loaded: {} bytes", ca_der.len());
 
-        let ca_chain = build_trimmed_c_str_vec(ca_chain);
-        let cert = build_trimmed_c_str_vec(tls_cert);
-        let key = build_trimmed_c_str_vec(tls_key);
+        if cfg!(feature = "mtls") {
+             let tls_cert = if let Some(tls_cert) = CONFIG.tls_cert {
+                tls_cert
+             } else {
+                 return Err(Error::ClientCertificateMissing);
+             };
 
-        let certificates = if cfg!(feature = "mtls") {
-            Certificates {
-                ca_chain: X509::pem(&ca_chain).ok(),
-                certificate: X509::pem(&cert).ok(),
-                private_key: X509::pem(&key).ok(),
-                password: None,
-            }
-        } else {
-            Certificates {
-                ca_chain: X509::pem(&ca_chain).ok(),
-                ..Default::default()
-            }
-        };
+             let tls_key = if let Some(tls_key) = CONFIG.tls_key {
+                tls_key
+             } else {
+                 return Err(Error::ClientPrivateKeyMissing);
+             };
 
-        // convert servername to c-string
-        let mut host_buf = [0u8; 64];
-        let servername = write_trimmed_c_str(hostname, &mut host_buf)
-            .map_err(|_| Error::HostnameCstrConversionError)?;
+             _client_cert_der = decode_pem(tls_cert)?;
+             _client_key_der = decode_pem(tls_key)?;
 
-        let mut session = Session::new(
-            socket,
-            Mode::Client { servername },
-            Tls1_2,
-            certificates,
-            tls.reference(),
-        )
-        .map_err(Error::TLSSessionFailed)?;
+             // Test if the key can be parsed by p256
+             match SecretKey::<p256::NistP256>::from_sec1_der(&_client_key_der) {
+                 Ok(_) => log::info!("Private key successfully parsed as SEC1 DER"),
+                 Err(e) => log::error!("Failed to parse private key as SEC1 DER: {:?}", e),
+             }
 
-        session.connect().await.map_err(Error::TLSHandshakeFailed)?;
+             config = config.with_cert(embedded_tls::Certificate::X509(&_client_cert_der));
+             config = config.with_priv_key(&_client_key_der);
+
+             log::info!("mTLS enabled: cert {} bytes, key {} bytes", _client_cert_der.len(), _client_key_der.len());
+        }
+
+        let mut tls: TlsConnection<TcpSocket, Aes128GcmSha256> =
+            TlsConnection::new(socket, tls_read_buffer, tls_write_buffer);
+
+        log::info!("Starting TLS handshake with {} (TLS 1.3, AES-128-GCM-SHA256)", hostname);
+        let crypto_provider = UnsecureProvider::new::<Aes128GcmSha256>(rng);
+        tls.open(TlsContext::new(&config, crypto_provider))
+            .await
+            .map_err(|e| {
+                log::error!("TLS handshake failed: {:?}", e);
+                log::error!("This could be due to:");
+                log::error!("  - Server certificate verification failure");
+                log::error!("  - Cipher suite mismatch");
+                log::error!("  - Protocol version mismatch (ensure server supports TLS 1.3)");
+                log::error!("  - Buffer size too small (minimum 16384 bytes required)");
+                Error::TLSHandshakeFailed
+            })?;
+        log::info!("TLS handshake complete");
 
         Ok(Self {
-            session,
+            session: tls,
             _marker: PhantomData,
         })
     }
 }
 
+fn decode_pem(pem: &str) -> Result<Vec<u8>, Error> {
+    use base64::Engine;
+    let start_marker = "-----BEGIN";
+    let end_marker = "-----END";
+    let start = pem.find(start_marker).ok_or(Error::PEMParseError)?;
+    let begin_end = pem[start..].find('\n').ok_or(Error::PEMParseError)? + start + 1;
+    let end = pem.find(end_marker).ok_or(Error::PEMParseError)?;
+
+    let base64_content: String = pem[begin_end..end]
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+
+    base64::engine::general_purpose::STANDARD
+        .decode(base64_content)
+        .map_err(|_| Error::PEMParseError)
+}
+
 #[cfg(not(feature = "tls"))]
 impl<'a> Transport<'a, TcpSocket<'a>> {
-    pub async fn new(
+    pub async fn new<RNG>(
         stack: Stack<'static>,
-        _tls: &'a Tls<'static>,
+        _rng: &mut RNG,
         rx_buffer: &'a mut [u8],
         tx_buffer: &'a mut [u8],
+        _tls_read_buffer: &'a mut [u8],
+        _tls_write_buffer: &'a mut [u8],
         hostname: &str,
         port: u16,
     ) -> Result<Self, Error> {
         let mut socket = TcpSocket::new(stack, rx_buffer, tx_buffer);
-        socket.set_timeout(Some(Duration::from_secs(30)));
+        socket.set_timeout(Some(Duration::from_secs(300)));
 
         let addr = stack
             .dns_query(hostname, DnsQueryType::A)
             .await
             .map_err(|_| Error::DNSLookupFailed)?
-            .get(0)
+            .first()
             .copied()
             .ok_or(Error::DNSLookupFailed)?;
         socket
             .connect((addr, port))
             .await
-            .map_err(|_| Error::SocketConnectionError)?;
+            .map_err(|_| Error::SocketConnectionError(ConnectError::ConnectionReset))?;
 
         Ok(Self {
             session: socket,
@@ -166,13 +211,17 @@ where
     S::Error: core::fmt::Debug,
 {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, S::Error> {
+        log::info!("Transport read: buffer size {} bytes", buf.len());
         for attempt in 0..MAX_RETRIES {
             match self.session.read(buf).await {
-                Ok(n) => return Ok(n),
+                Ok(n) => {
+                    log::info!("Transport read success: {} bytes", n);
+                    return Ok(n);
+                }
                 Err(e) => {
                     // Check if this is an EOF-related error that shouldn't be retried
                     if is_eof_error(&e) {
-                        log::debug!("EOF encountered, not retrying: {:?}", e);
+                        log::info!("EOF encountered, not retrying: {:?}", e);
                         return Err(e);
                     }
 
@@ -184,6 +233,35 @@ where
             }
         }
         unreachable!()
+    }
+
+    async fn read_exact(&mut self, mut buf: &mut [u8]) -> Result<(), ReadExactError<S::Error>> {
+        while !buf.is_empty() {
+            let mut retry = 0;
+            loop {
+                match self.session.read(buf).await {
+                    Ok(0) => return Err(ReadExactError::UnexpectedEof),
+                    Ok(n) => {
+                        buf = &mut buf[n..];
+                        break;
+                    }
+                    Err(e) => {
+                        // Don't retry EOF errors
+                        if is_eof_error(&e) {
+                            log::debug!("EOF encountered in read_exact: {:?}", e);
+                            return Err(ReadExactError::UnexpectedEof);
+                        }
+
+                        retry += 1;
+                        log::warn!("read_exact attempt {} failed: {:?}", retry, e);
+                        if retry >= MAX_RETRIES {
+                            return Err(ReadExactError::Other(e));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -205,7 +283,18 @@ where
     async fn write(&mut self, buf: &[u8]) -> Result<usize, S::Error> {
         for attempt in 0..MAX_RETRIES {
             match self.session.write(buf).await {
-                Ok(n) => return Ok(n),
+                Ok(n) => {
+                    log::info!("Transport write success: {} bytes buffered", n);
+                    // Auto-flush after write - rust-mqtt doesn't call flush(),
+                    // but embedded-tls buffers data until flush() is called.
+                    // Without this, MQTT packets never get sent over the wire.
+                    if let Err(e) = self.session.flush().await {
+                        log::error!("Auto-flush after write failed: {:?}", e);
+                        return Err(e);
+                    }
+                    log::info!("Transport auto-flush success, data sent");
+                    return Ok(n);
+                }
                 Err(e) => {
                     log::warn!("write attempt {} failed: {:?}", attempt + 1, e);
                     if attempt + 1 == MAX_RETRIES {
@@ -218,9 +307,13 @@ where
     }
 
     async fn flush(&mut self) -> Result<(), S::Error> {
+        log::info!("Transport flush called");
         for attempt in 0..MAX_RETRIES {
             match self.session.flush().await {
-                Ok(()) => return Ok(()),
+                Ok(()) => {
+                    log::info!("Transport flush success");
+                    return Ok(());
+                }
                 Err(e) => {
                     log::warn!("flush attempt {} failed: {:?}", attempt + 1, e);
                     if attempt + 1 == MAX_RETRIES {

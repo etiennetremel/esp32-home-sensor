@@ -33,8 +33,14 @@ impl<'a, T: Read + Write> Mqtt<'a, T> {
         let mut client =
             MqttClient::<T, 5, CountingRng>::new(transport, tx_buffer, 256, rx_buffer, 256, config);
 
-        if (client.connect_to_broker().await).is_err() {
-            return Err(Error::ConnectionFailed);
+        match client.connect_to_broker().await {
+            Ok(_) => {
+                log::info!("MQTT connected to broker successfully");
+            }
+            Err(e) => {
+                log::error!("MQTT connect_to_broker failed: {:?}", e);
+                return Err(Error::ConnectionFailed);
+            }
         }
 
         Ok(Self { client })

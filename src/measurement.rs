@@ -1,7 +1,7 @@
 use embassy_net::Stack;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
-use esp_mbedtls::Tls;
 use heapless::String;
+use rand_chacha::ChaCha20Rng;
 use static_cell::StaticCell;
 
 use crate::config::CONFIG;
@@ -23,9 +23,11 @@ pub enum Error {
 
 pub struct Measurement {
     stack: &'static Mutex<NoopRawMutex, Stack<'static>>,
-    tls: &'static Tls<'static>,
+    rng: ChaCha20Rng,
     rx_buf: &'static Mutex<NoopRawMutex, [u8; RX_BUFFER_SIZE]>,
     tx_buf: &'static Mutex<NoopRawMutex, [u8; TX_BUFFER_SIZE]>,
+    tls_read_buf: &'static Mutex<NoopRawMutex, [u8; TLS_BUFFER_MAX]>,
+    tls_write_buf: &'static Mutex<NoopRawMutex, [u8; TLS_BUFFER_MAX]>,
     mqtt_rx_buf: &'static Mutex<NoopRawMutex, [u8; MQTT_RX_BUFFER_SIZE]>,
     mqtt_tx_buf: &'static Mutex<NoopRawMutex, [u8; MQTT_TX_BUFFER_SIZE]>,
     sensors: Sensors,
@@ -34,9 +36,11 @@ pub struct Measurement {
 impl Measurement {
     pub fn new(
         stack: &'static Mutex<NoopRawMutex, Stack<'static>>,
-        tls: &'static Tls<'static>,
+        rng: ChaCha20Rng,
         rx_buf: &'static Mutex<NoopRawMutex, [u8; RX_BUFFER_SIZE]>,
         tx_buf: &'static Mutex<NoopRawMutex, [u8; TX_BUFFER_SIZE]>,
+        tls_read_buf: &'static Mutex<NoopRawMutex, [u8; TLS_BUFFER_MAX]>,
+        tls_write_buf: &'static Mutex<NoopRawMutex, [u8; TLS_BUFFER_MAX]>,
         sensors: Sensors,
     ) -> Result<Self, Error> {
         let mqtt_rx_buf = MQTT_RX_BUF.init(Mutex::new([0; MQTT_RX_BUFFER_SIZE]));
@@ -44,9 +48,11 @@ impl Measurement {
 
         Ok(Self {
             stack,
-            tls,
+            rng,
             rx_buf,
             tx_buf,
+            tls_read_buf,
+            tls_write_buf,
             mqtt_rx_buf,
             mqtt_tx_buf,
             sensors,
@@ -66,18 +72,25 @@ impl Measurement {
         let stack_guard = self.stack.lock().await;
         let mut rx_buf = self.rx_buf.lock().await;
         let mut tx_buf = self.tx_buf.lock().await;
+        let mut tls_read_buf = self.tls_read_buf.lock().await;
+        let mut tls_write_buf = self.tls_write_buf.lock().await;
 
         // Create transport session
         let transport = Transport::new(
             *stack_guard,
-            self.tls,
+            &mut self.rng,
             &mut *rx_buf,
             &mut *tx_buf,
+            &mut *tls_read_buf,
+            &mut *tls_write_buf,
             CONFIG.mqtt_hostname,
             CONFIG.mqtt_port,
         )
         .await
-        .map_err(|_| Error::Transport)?;
+        .map_err(|e| {
+            log::error!("Transport creation failed: {:?}", e);
+            Error::Transport
+        })?;
 
         // Create MQTT client
         let mut mqtt_rx_buf = self.mqtt_rx_buf.lock().await;

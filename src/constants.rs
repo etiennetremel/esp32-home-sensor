@@ -1,18 +1,15 @@
 /// Current firmware version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Size of the heap in DRAM (internal memory)
-pub const HEAP_DRAM_SIZE: usize = 72 * 1024;
-/// Size of the heap in PSRAM (external memory)
-pub const HEAP_PSRAM_SIZE: usize = 64 * 1024;
-
 /// Size of the TCP socket receive buffer for encrypted data
-pub const RX_BUFFER_SIZE: usize = 4096;
+pub const RX_BUFFER_SIZE: usize = 3072;
 /// Size of the TCP socket transmit buffer for encrypted data
-pub const TX_BUFFER_SIZE: usize = 4096;
+pub const TX_BUFFER_SIZE: usize = 3072;
 
 /// Maximum size for TLS processing buffer (for TLS records)
-pub const TLS_BUFFER_MAX: usize = 4096;
+/// embedded-tls 0.17.0 requires at least 16640 bytes for TLS 1.3 handshakes
+/// (16384 bytes for TLS record + 256 bytes overhead)
+pub const TLS_BUFFER_MAX: usize = 16640;
 
 /// Size of the MQTT client receive buffer for application data
 pub const MQTT_RX_BUFFER_SIZE: usize = 1024;

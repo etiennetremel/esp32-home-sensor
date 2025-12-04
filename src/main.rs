@@ -1,8 +1,6 @@
 #![no_std]
 #![no_main]
 
-use static_cell::StaticCell;
-
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_executor::Spawner;
 use embassy_net::Stack;
@@ -11,18 +9,24 @@ use embassy_time::{Duration, Timer};
 
 use esp_alloc as _;
 use esp_backtrace as _;
-use esp_hal::{self as hal};
-use esp_mbedtls::Tls;
-use esp_println::logger::init_logger;
-
-use hal::{
+use esp_hal::{
+    self as hal,
+    Async,
+    clock::CpuClock,
     i2c::master::{BusTimeout, I2c},
+    ram,
     rng::Rng,
     time::Rate,
     timer::timg::TimerGroup,
     uart::{RxConfig, Uart},
-    Async,
 };
+use esp_println::logger::init_logger;
+use esp_radio::Controller;
+
+use rand_chacha::ChaCha20Rng;
+use rand_core::SeedableRng;
+
+use static_cell::StaticCell;
 
 extern crate alloc;
 
@@ -44,29 +48,42 @@ use sensors::Sensors;
 use wifi::Wifi;
 
 static I2C_BUS: StaticCell<Mutex<NoopRawMutex, I2c<'static, Async>>> = StaticCell::new();
-static TLS: StaticCell<Tls<'static>> = StaticCell::new();
 static STACK: StaticCell<Mutex<NoopRawMutex, Stack<'static>>> = StaticCell::new();
 
 static RX_BUF: StaticCell<Mutex<NoopRawMutex, [u8; RX_BUFFER_SIZE]>> = StaticCell::new();
 static TX_BUF: StaticCell<Mutex<NoopRawMutex, [u8; TX_BUFFER_SIZE]>> = StaticCell::new();
+static TLS_READ_BUF: StaticCell<Mutex<NoopRawMutex, [u8; TLS_BUFFER_MAX]>> = StaticCell::new();
+static TLS_WRITE_BUF: StaticCell<Mutex<NoopRawMutex, [u8; TLS_BUFFER_MAX]>> = StaticCell::new();
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
-#[esp_hal_embassy::main]
+macro_rules! mk_static {
+    ($t:ty,$val:expr) => {{
+        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
+        #[deny(unused_attributes)]
+        let x = STATIC_CELL.uninit().write(($val));
+        x
+    }};
+}
+
+#[esp_rtos::main(stack_size = 32768)]
 async fn main(spawner: Spawner) {
     init_logger(log::LevelFilter::Info);
 
-    let peripherals = esp_hal::init(esp_hal::Config::default());
+    let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
+    let peripherals = esp_hal::init(config);
 
-    let rng = Rng::new(peripherals.RNG);
+    let rng = Rng::new();
 
-    esp_alloc::heap_allocator!(size: HEAP_DRAM_SIZE);
-    esp_alloc::heap_allocator!(#[unsafe(link_section = ".dram2_uninit")] size: HEAP_PSRAM_SIZE);
+    // Use reclaimed RAM for the heap - this is critical for WiFi to work properly.
+    // The WiFi blob expects memory to be allocated from reclaimed RAM regions.
+    // See: https://github.com/esp-rs/esp-hal/blob/esp-radio-v0.17.0/examples/wifi/embassy_dhcp/src/main.rs
+    esp_alloc::heap_allocator!(#[ram(reclaimed)] size: 64 * 1024);
+    esp_alloc::heap_allocator!(size: 36 * 1024);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
-    let timg1 = TimerGroup::new(peripherals.TIMG1);
 
-    esp_hal_embassy::init(timg0.timer0);
+    esp_rtos::start(timg0.timer0);
 
     // possibly high transient required at init
     // https://github.com/esp-rs/esp-hal/issues/1626
@@ -126,10 +143,13 @@ async fn main(spawner: Spawner) {
         }
     }
 
+    let flash = esp_storage::FlashStorage::new(peripherals.FLASH);
+
+    let esp_radio_ctrl = &*mk_static!(Controller<'static>, esp_radio::init().unwrap());
+
     let wifi = Wifi::new(
+        esp_radio_ctrl,
         peripherals.WIFI,
-        timg1.timer0,
-        peripherals.RADIO_CLK,
         rng,
         spawner,
     )
@@ -138,28 +158,48 @@ async fn main(spawner: Spawner) {
 
     wifi.connect().await.unwrap();
 
-    let mut tls = Tls::new(peripherals.SHA)
-        .unwrap()
-        .with_hardware_rsa(peripherals.RSA);
-
-    tls.set_debug(0);
-
-    let tls_shared = TLS.init(tls);
+    // Create a 32-byte seed for ChaCha20Rng
+    let mut seed = [0u8; 32];
+    for chunk in seed.chunks_mut(4) {
+        let random_u32 = rng.random();
+        chunk.copy_from_slice(&random_u32.to_le_bytes()[..chunk.len()]);
+    }
+    let chacha_rng = ChaCha20Rng::from_seed(seed);
 
     let stack_shared = Mutex::new(wifi.stack);
     let stack_shared = STACK.init(stack_shared);
 
     let rx_buf = RX_BUF.init(Mutex::new([0; RX_BUFFER_SIZE]));
     let tx_buf = TX_BUF.init(Mutex::new([0; TX_BUFFER_SIZE]));
+    let tls_read_buf = TLS_READ_BUF.init(Mutex::new([0; TLS_BUFFER_MAX]));
+    let tls_write_buf = TLS_WRITE_BUF.init(Mutex::new([0; TLS_BUFFER_MAX]));
 
-    let firmware_update = FirmwareUpdate::new(stack_shared, tls_shared, rx_buf, tx_buf).unwrap();
-    let measurement = Measurement::new(stack_shared, tls_shared, rx_buf, tx_buf, sensors).unwrap();
+    let firmware_update = FirmwareUpdate::new(
+        stack_shared,
+        chacha_rng.clone(),
+        rx_buf,
+        tx_buf,
+        tls_read_buf,
+        tls_write_buf,
+        flash,
+    )
+    .unwrap();
+    let measurement = Measurement::new(
+        stack_shared,
+        chacha_rng,
+        rx_buf,
+        tx_buf,
+        tls_read_buf,
+        tls_write_buf,
+        sensors,
+    )
+    .unwrap();
 
     spawner.spawn(main_task(firmware_update, measurement)).ok();
 }
 
 #[embassy_executor::task]
-async fn main_task(mut firmware_update: FirmwareUpdate, mut measurement: Measurement) {
+async fn main_task(mut firmware_update: FirmwareUpdate<'static>, mut measurement: Measurement) {
     // check for firmware update at boot time
     let mut update_counter = FIRMWARE_CHECK_INTERVAL / CONFIG.measurement_interval_seconds as u64;
 
