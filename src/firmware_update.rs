@@ -1,11 +1,15 @@
+use alloc::boxed::Box;
 use alloc::format;
 use embassy_net::Stack;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embassy_time::Timer;
 use embedded_io_async::{Read, Write};
-use esp_hal_ota::Ota;
-use esp_mbedtls::Tls;
+use embedded_storage::nor_flash::NorFlash;
+use esp_bootloader_esp_idf::{
+    ota::OtaImageState, ota_updater::OtaUpdater, partitions::PARTITION_TABLE_MAX_LEN,
+};
 use esp_storage::FlashStorage;
+use rand_chacha::ChaCha20Rng;
 
 use crate::config::CONFIG;
 use crate::constants::*;
@@ -20,27 +24,33 @@ pub enum Error {
     Config,     // Configuration errors
 }
 
-pub struct FirmwareUpdate {
+pub struct FirmwareUpdate<'a> {
     stack: &'static Mutex<NoopRawMutex, Stack<'static>>,
-    tls: &'static Tls<'static>,
+    rng: ChaCha20Rng,
     rx_buf: &'static Mutex<NoopRawMutex, [u8; RX_BUFFER_SIZE]>,
     tx_buf: &'static Mutex<NoopRawMutex, [u8; TX_BUFFER_SIZE]>,
+    tls_read_buf: &'static Mutex<NoopRawMutex, [u8; TLS_BUFFER_MAX]>,
+    tls_write_buf: &'static Mutex<NoopRawMutex, [u8; TLS_BUFFER_MAX]>,
     device_id: &'static str,
     ota_hostname: &'static str,
     ota_port: u16,
+    flash: FlashStorage<'a>,
 }
 
-impl FirmwareUpdate {
+impl<'a> FirmwareUpdate<'a> {
     pub fn new(
         stack: &'static Mutex<NoopRawMutex, Stack<'static>>,
-        tls: &'static Tls<'static>,
+        rng: ChaCha20Rng,
         rx_buf: &'static Mutex<NoopRawMutex, [u8; RX_BUFFER_SIZE]>,
         tx_buf: &'static Mutex<NoopRawMutex, [u8; TX_BUFFER_SIZE]>,
+        tls_read_buf: &'static Mutex<NoopRawMutex, [u8; TLS_BUFFER_MAX]>,
+        tls_write_buf: &'static Mutex<NoopRawMutex, [u8; TLS_BUFFER_MAX]>,
+        mut flash: FlashStorage<'a>,
     ) -> Result<Self, Error> {
-        // Mark app valid on startup, no separate function call needed
-        let _ = Ota::new(FlashStorage::new())
-            .map_err(|_| Error::Ota)?
-            .ota_mark_app_valid();
+        // Mark app valid on startup
+        let mut buffer = Box::new([0u8; PARTITION_TABLE_MAX_LEN]);
+        let mut ota = OtaUpdater::new(&mut flash, &mut buffer).map_err(|_| Error::Ota)?;
+        ota.set_current_ota_state(OtaImageState::Valid).ok();
 
         let device_id = CONFIG.device_id;
         let ota_hostname = CONFIG.ota_hostname.ok_or(Error::Config)?;
@@ -48,12 +58,15 @@ impl FirmwareUpdate {
 
         Ok(Self {
             stack,
-            tls,
+            rng,
             rx_buf,
             tx_buf,
+            tls_read_buf,
+            tls_write_buf,
             device_id,
             ota_hostname,
             ota_port,
+            flash,
         })
     }
 
@@ -61,18 +74,22 @@ impl FirmwareUpdate {
         let stack_guard = self.stack.lock().await;
         let mut rx_buf = self.rx_buf.lock().await;
         let mut tx_buf = self.tx_buf.lock().await;
+        let mut tls_read_buf = self.tls_read_buf.lock().await;
+        let mut tls_write_buf = self.tls_write_buf.lock().await;
 
         // Create transport session
-        let mut session = Transport::new(
+        let mut session = Box::new(Transport::new(
             *stack_guard,
-            self.tls,
+            &mut self.rng,
             &mut *rx_buf,
             &mut *tx_buf,
+            &mut *tls_read_buf,
+            &mut *tls_write_buf,
             self.ota_hostname,
             self.ota_port,
         )
         .await
-        .map_err(|_| Error::Connection)?;
+        .map_err(|_| Error::Connection)?);
 
         // Use a static string slice for the HTTP request template (optimized
         // for memory)
@@ -147,29 +164,30 @@ impl FirmwareUpdate {
         }
 
         // We only continue if an update is needed
-        let crc32 = parse_number::<u32>(lines.next().ok_or(Error::Info)?)?;
+        let _crc32 = parse_number::<u32>(lines.next().ok_or(Error::Info)?)?;
         let size = parse_number::<usize>(lines.next().ok_or(Error::Info)?)?;
 
         log::info!(
-            "OTA: server reports version={}, crc32={:#x}, size={}",
+            "OTA: server reports version={}, size={}",
             remote_version,
-            crc32,
             size
         );
 
         // Drop session and create a new one for firmware download
         drop(session);
 
-        let mut session = Transport::new(
+        let mut session = Box::new(Transport::new(
             *stack_guard,
-            self.tls,
+            &mut self.rng,
             &mut *rx_buf,
             &mut *tx_buf,
+            &mut *tls_read_buf,
+            &mut *tls_write_buf,
             self.ota_hostname,
             self.ota_port,
         )
         .await
-        .map_err(|_| Error::Connection)?;
+        .map_err(|_| Error::Connection)?);
 
         // Same approach for firmware request
         const FIRMWARE_REQ_PREFIX: &str = "GET /firmware?device=";
@@ -223,36 +241,157 @@ impl FirmwareUpdate {
         let body_start = body_start.ok_or(Error::Firmware)?;
 
         // Initialize OTA
-        let mut ota = Ota::new(FlashStorage::new()).map_err(|_| Error::Ota)?;
-        ota.ota_begin(size as u32, crc32).map_err(|_| Error::Ota)?;
+        let mut table_buffer = Box::new([0u8; PARTITION_TABLE_MAX_LEN]);
+        let mut ota =
+            OtaUpdater::new(&mut self.flash, &mut table_buffer).map_err(|_| Error::Ota)?;
 
-        let mut bytes_written = 0;
+        let (mut next_app_partition, _part_type) = ota.next_partition().map_err(|_| Error::Ota)?;
 
-        // Write leftover bytes from first read
+        // Erase the partition in chunks to avoid watchdog timeout
+        // Flash erase is blocking and can take several seconds for large partitions
+        let erase_len = (size + 4095) & !4095;
+        log::info!("Erasing OTA partition ({} bytes)...", erase_len);
+
+        const ERASE_CHUNK_SIZE: u32 = 65536; // 64KB chunks
+        let mut erased: u32 = 0;
+        while erased < erase_len as u32 {
+            let chunk = core::cmp::min(ERASE_CHUNK_SIZE, erase_len as u32 - erased);
+            next_app_partition
+                .erase(erased, erased + chunk)
+                .map_err(|e| {
+                    log::error!("Flash erase failed at offset {}: {:?}", erased, e);
+                    Error::Ota
+                })?;
+            erased += chunk;
+            // Yield to let the watchdog and WiFi tasks run
+            Timer::after(embassy_time::Duration::from_millis(10)).await;
+            if erased % (256 * 1024) == 0 {
+                log::info!("Erase progress: {}KB / {}KB", erased / 1024, erase_len / 1024);
+            }
+        }
+
+        let mut bytes_written: usize = 0;
+
+        // ESP32 flash requires 4-byte aligned writes, so we buffer data
+        const WRITE_ALIGN: usize = 4;
+        let mut write_buf = [0u8; OTA_CHUNK_BUFFER_SIZE];
+        let mut write_buf_len: usize = 0;
+
+        // Process leftover bytes from first read into the buffer
         if total_read > body_start {
             let leftover = &buf[body_start..total_read];
-            ota.ota_write_chunk(leftover).map_err(|_| Error::Ota)?;
-            bytes_written += leftover.len();
+            write_buf[..leftover.len()].copy_from_slice(leftover);
+            write_buf_len = leftover.len();
+            log::info!("OTA: buffered {} leftover bytes from header read", leftover.len());
         }
 
         // Process firmware in chunks
-        download_firmware(&mut session, &mut ota, size, bytes_written).await?;
+        let mut chunk_buf = [0u8; OTA_CHUNK_BUFFER_SIZE];
+        loop {
+            // Only read as much as we have space for in write_buf
+            let max_read = OTA_CHUNK_BUFFER_SIZE - write_buf_len;
+            let n = session.read(&mut chunk_buf[..max_read]).await;
 
-        // Verify and finalize
-        if ota.ota_verify().map_err(|_| Error::Ota)? {
-            log::info!("CRC OK. Finalizing OTA.");
-            if ota.ota_flush(false, true).is_ok() {
-                log::info!("OTA complete. Rebooting...");
-                Timer::after_millis(1_000).await;
-                esp_hal::system::software_reset();
-            } else {
-                log::error!("Failed to finalize OTA.");
-                Err(Error::Ota)
+            match n {
+                Ok(0) => {
+                    // EOF - flush remaining data with padding
+                    if write_buf_len > 0 {
+                        let padded_len = (write_buf_len + WRITE_ALIGN - 1) & !(WRITE_ALIGN - 1);
+                        // Pad with 0xFF (erased flash state)
+                        for i in write_buf_len..padded_len {
+                            write_buf[i] = 0xFF;
+                        }
+                        next_app_partition
+                            .write(bytes_written as u32, &write_buf[..padded_len])
+                            .map_err(|e| {
+                                log::error!("Flash write failed at offset {}: {:?}", bytes_written, e);
+                                Error::Ota
+                            })?;
+                        bytes_written += write_buf_len; // Count actual bytes, not padding
+                    }
+                    break;
+                }
+                Ok(bytes_read) => {
+                    // Add new data to write buffer
+                    write_buf[write_buf_len..write_buf_len + bytes_read]
+                        .copy_from_slice(&chunk_buf[..bytes_read]);
+                    write_buf_len += bytes_read;
+
+                    // Write aligned portion
+                    let aligned_len = write_buf_len & !(WRITE_ALIGN - 1);
+                    if aligned_len > 0 {
+                        next_app_partition
+                            .write(bytes_written as u32, &write_buf[..aligned_len])
+                            .map_err(|e| {
+                                log::error!("Flash write failed at offset {}: {:?}", bytes_written, e);
+                                Error::Ota
+                            })?;
+                        bytes_written += aligned_len;
+
+                        // Move remaining bytes to start of buffer
+                        let remaining = write_buf_len - aligned_len;
+                        if remaining > 0 {
+                            write_buf.copy_within(aligned_len..write_buf_len, 0);
+                        }
+                        write_buf_len = remaining;
+                    }
+
+                    if size > 0 && bytes_written % (size / 10) < OTA_CHUNK_BUFFER_SIZE {
+                        log::info!("Progress: {}%", (bytes_written * 100) / size);
+                        // Yield to let other tasks (wifi) run
+                        Timer::after(embassy_time::Duration::from_millis(10)).await;
+                    }
+                }
+                Err(e) => {
+                    let error_str = format!("{:?}", e);
+                    // Treat EOF, connection closed, and similar as successful completion
+                    if error_str.contains("Eof")
+                        || error_str.contains("EOF")
+                        || error_str.contains("ConnectionClosed")
+                        || error_str.contains("Closed")
+                    {
+                        // EOF - flush remaining data with padding
+                        if write_buf_len > 0 {
+                            let padded_len = (write_buf_len + WRITE_ALIGN - 1) & !(WRITE_ALIGN - 1);
+                            for i in write_buf_len..padded_len {
+                                write_buf[i] = 0xFF;
+                            }
+                            next_app_partition
+                                .write(bytes_written as u32, &write_buf[..padded_len])
+                                .map_err(|e| {
+                                    log::error!("Flash write failed at offset {}: {:?}", bytes_written, e);
+                                    Error::Ota
+                                })?;
+                            bytes_written += write_buf_len;
+                        }
+                        break;
+                    } else {
+                        log::error!("Error reading firmware chunk: {:?}", e);
+                        return Err(Error::Firmware);
+                    }
+                }
             }
-        } else {
-            log::error!("CRC mismatch after flash!");
-            Err(Error::Ota)
         }
+
+        log::info!(
+            "Firmware download complete: {} bytes written (expected {})",
+            bytes_written,
+            size
+        );
+
+        if bytes_written != size {
+             log::error!("Size mismatch!");
+             return Err(Error::Firmware);
+        }
+
+        // Finalize
+        ota.activate_next_partition().map_err(|_| Error::Ota)?;
+        ota.set_current_ota_state(OtaImageState::New)
+            .map_err(|_| Error::Ota)?;
+
+        log::info!("OTA complete. Rebooting...");
+        Timer::after(embassy_time::Duration::from_millis(1_000)).await;
+        esp_hal::system::software_reset();
     }
 }
 
@@ -263,59 +402,6 @@ fn parse_number<T: core::str::FromStr>(bytes: &[u8]) -> Result<T, Error> {
         .trim()
         .parse::<T>()
         .map_err(|_| Error::Info)
-}
-
-// Download firmware
-async fn download_firmware<R: Read + Write>(
-    session: &mut R,
-    ota: &mut Ota<FlashStorage>,
-    size: usize,
-    mut bytes_written: usize,
-) -> Result<(), Error>
-where
-    R::Error: core::fmt::Debug,
-{
-    let mut chunk_buf = [0u8; OTA_CHUNK_BUFFER_SIZE];
-    loop {
-        let n = session.read(&mut chunk_buf).await;
-
-        match n {
-            Ok(0) => {
-                // EOF - normal end of transmission
-                log::debug!("EOF reached, firmware download complete");
-                break;
-            }
-            Ok(bytes_read) => {
-                ota.ota_write_chunk(&chunk_buf[..bytes_read])
-                    .map_err(|_| Error::Ota)?;
-                bytes_written += bytes_read;
-
-                // Log progress
-                if size > 0 && bytes_written % (size / 10) < OTA_CHUNK_BUFFER_SIZE {
-                    log::info!("Progress: {}%", (bytes_written * 100) / size);
-                }
-            }
-            Err(e) => {
-                // Check if this is an EOF-related error
-                let error_str = format!("{:?}", e);
-                if error_str.contains("Eof") || error_str.contains("EOF") {
-                    log::debug!("EOF error encountered: {:?}", e);
-                    break;
-                } else {
-                    log::error!("Error reading firmware chunk: {:?}", e);
-                    return Err(Error::Firmware);
-                }
-            }
-        }
-    }
-
-    log::info!(
-        "Firmware download complete: {} bytes written (expected {})",
-        bytes_written,
-        size
-    );
-
-    Ok(())
 }
 
 fn find_header_end(buf: &[u8]) -> Option<usize> {
