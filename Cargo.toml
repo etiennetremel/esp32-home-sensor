@@ -51,7 +51,7 @@ esp-rtos = { version = "0.2.0", features = [
 ] }
 esp-storage = { version = "0.8.1", features = ["esp32"] }
 
-embedded-tls = { git = "https://github.com/drogue-iot/embedded-tls", branch = "main", default-features = false, features = [
+embedded-tls = { git = "https://github.com/drogue-iot/embedded-tls", rev = "ce16bcf9f8a95a51272ce5f86b0b42a9c2e0e2a5", default-features = false, features = [
   "log",
   "alloc",
 ] }
