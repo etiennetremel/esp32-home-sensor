@@ -10,7 +10,7 @@ use embassy_net::{
 };
 use embassy_time::Duration;
 use embedded_io_async::{ErrorType, Read, ReadExactError, Write};
-use embedded_tls::{Aes256GcmSha384, TlsConfig, TlsConnection, TlsContext, UnsecureProvider};
+use embedded_tls::{Aes128GcmSha256, TlsConfig, TlsConnection, TlsContext, UnsecureProvider};
 #[cfg(feature = "mtls")]
 use p256::elliptic_curve::SecretKey;
 use rand_core::{CryptoRng, RngCore};
@@ -47,7 +47,7 @@ where
 }
 
 #[cfg(feature = "tls")]
-impl<'a> Transport<'a, TlsConnection<'a, TcpSocket<'a>, Aes256GcmSha384>> {
+impl<'a> Transport<'a, TlsConnection<'a, TcpSocket<'a>, Aes128GcmSha256>> {
     pub async fn new<RNG>(
         stack: Stack<'static>,
         rng: &mut RNG,
@@ -121,11 +121,11 @@ impl<'a> Transport<'a, TlsConnection<'a, TcpSocket<'a>, Aes256GcmSha384>> {
              log::info!("mTLS enabled: cert {} bytes, key {} bytes", _client_cert_der.len(), _client_key_der.len());
         }
 
-        let mut tls: TlsConnection<TcpSocket, Aes256GcmSha384> =
+        let mut tls: TlsConnection<TcpSocket, Aes128GcmSha256> =
             TlsConnection::new(socket, tls_read_buffer, tls_write_buffer);
 
-        log::info!("Starting TLS handshake with {} (TLS 1.3, AES-256-GCM-SHA384)", hostname);
-        let crypto_provider = UnsecureProvider::new::<Aes256GcmSha384>(rng);
+        log::info!("Starting TLS handshake with {} (TLS 1.3, AES-128-GCM-SHA256)", hostname);
+        let crypto_provider = UnsecureProvider::new::<Aes128GcmSha256>(rng);
         tls.open(TlsContext::new(&config, crypto_provider))
             .await
             .map_err(|e| {
