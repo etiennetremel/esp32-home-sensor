@@ -116,7 +116,7 @@ cargo espflash flash \
     --release \
     --features influx,tls,mtls,ota,bme280 \
     --no-default-features \
-    -T ./partitions.csv \
+    --partition-tabel ./partitions.csv \
     --erase-parts otadata
 ```
 
