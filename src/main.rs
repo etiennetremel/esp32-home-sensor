@@ -17,7 +17,7 @@ use esp_hal::{
     ram,
     rng::Rng,
     time::Rate,
-    timer::timg::TimerGroup,
+    timer::timg::{MwdtStage, TimerGroup, Wdt},
     uart::{RxConfig, Uart},
 };
 use esp_println::logger::init_logger;
@@ -82,6 +82,9 @@ async fn main(spawner: Spawner) {
     esp_alloc::heap_allocator!(size: 36 * 1024);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
+    let mut wdt0 = timg0.wdt;
+    wdt0.enable();
+    wdt0.set_timeout(MwdtStage::Stage0, hal::time::Duration::from_secs(10));
 
     esp_rtos::start(timg0.timer0);
 
@@ -156,7 +159,19 @@ async fn main(spawner: Spawner) {
     .await
     .unwrap();
 
-    wifi.connect().await.unwrap();
+    // Try to connect to WiFi with a timeout. If it fails, reboot.
+    // This prevents the device from hanging indefinitely at boot if WiFi is flaky.
+    match embassy_time::with_timeout(Duration::from_secs(20), wifi.connect()).await {
+        Ok(Ok(_)) => log::info!("Initial WiFi connection successful"),
+        Ok(Err(e)) => {
+            log::error!("Initial WiFi connection failed: {:?}. Rebooting...", e);
+            esp_hal::system::software_reset();
+        }
+        Err(_) => {
+            log::error!("Initial WiFi connection timed out. Rebooting...");
+            esp_hal::system::software_reset();
+        }
+    }
 
     // Create a 32-byte seed for ChaCha20Rng
     let mut seed = [0u8; 32];
@@ -195,15 +210,24 @@ async fn main(spawner: Spawner) {
     )
     .unwrap();
 
-    spawner.spawn(main_task(firmware_update, measurement)).ok();
+    spawner
+        .spawn(main_task(firmware_update, measurement, wdt0))
+        .ok();
 }
 
 #[embassy_executor::task]
-async fn main_task(mut firmware_update: FirmwareUpdate<'static>, mut measurement: Measurement) {
+async fn main_task(
+    mut firmware_update: FirmwareUpdate<'static>,
+    mut measurement: Measurement,
+    mut wdt: Wdt<esp_hal::peripherals::TIMG0<'static>>,
+) {
     // check for firmware update at boot time
     let mut update_counter = FIRMWARE_CHECK_INTERVAL / CONFIG.measurement_interval_seconds as u64;
 
     loop {
+        // Feed watchdog at start of loop
+        wdt.feed();
+
         // Only check for firmware updates periodically
         if cfg!(feature = "ota")
             && update_counter
@@ -212,13 +236,17 @@ async fn main_task(mut firmware_update: FirmwareUpdate<'static>, mut measurement
             update_counter = 0;
             if let Err(e) = firmware_update.check().await {
                 log::error!("Firmware update error: {:?}", e);
-                Timer::after(Duration::from_secs(
-                    CONFIG.measurement_interval_seconds.into(),
-                ))
-                .await;
+                // Smart sleep that feeds watchdog
+                for _ in 0..CONFIG.measurement_interval_seconds {
+                    Timer::after(Duration::from_secs(1)).await;
+                    wdt.feed();
+                }
                 continue;
             }
         }
+
+        // Feed before potentially long measurement/network operation
+        wdt.feed();
 
         // Take measurements each cycle
         if let Err(e) = measurement.take().await {
@@ -229,9 +257,10 @@ async fn main_task(mut firmware_update: FirmwareUpdate<'static>, mut measurement
             update_counter += 1;
         }
 
-        Timer::after(Duration::from_secs(
-            CONFIG.measurement_interval_seconds.into(),
-        ))
-        .await;
+        // Smart sleep that feeds watchdog instead of single long sleep
+        for _ in 0..CONFIG.measurement_interval_seconds {
+            Timer::after(Duration::from_secs(1)).await;
+            wdt.feed();
+        }
     }
 }
