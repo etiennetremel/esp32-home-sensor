@@ -1,5 +1,6 @@
 use embassy_net::Stack;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
+use embassy_time::{Duration, Timer};
 use heapless::String;
 use rand_chacha::ChaCha20Rng;
 use static_cell::StaticCell;
@@ -104,8 +105,13 @@ impl Measurement {
             .await
             .map_err(|_| Error::Mqtt)?;
 
-        // Explicitly disconnect
+        // Explicitly disconnect MQTT
         mqtt.disconnect().await;
+
+        // Allow network stack time to process socket cleanup.
+        // Without this, rapid reconnections can exhaust sockets before
+        // the previous connection is fully closed.
+        Timer::after(Duration::from_millis(100)).await;
 
         log::info!("MQTT data published successfully");
         Ok(())

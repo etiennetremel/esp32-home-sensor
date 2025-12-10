@@ -2,6 +2,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
+use core::sync::atomic::{AtomicPtr, Ordering};
 use embassy_net::tcp::ConnectError;
 use embassy_net::{
     dns::{DnsQueryType, Error as DNSError},
@@ -10,14 +11,82 @@ use embassy_net::{
 };
 use embassy_time::Duration;
 use embedded_io_async::{ErrorType, Read, ReadExactError, Write};
-use embedded_tls::{Aes256GcmSha384, TlsConfig, TlsConnection, TlsContext, UnsecureProvider};
+use embedded_tls::{Aes128GcmSha256, TlsConfig, TlsConnection, TlsContext, UnsecureProvider};
 #[cfg(feature = "mtls")]
 use p256::elliptic_curve::SecretKey;
 use rand_core::{CryptoRng, RngCore};
+use static_cell::StaticCell;
 
 use crate::config::CONFIG;
 
 const MAX_RETRIES: usize = 3;
+
+/// Cached DER-encoded certificates to avoid repeated PEM parsing and allocation.
+/// These are decoded once on first use and reused for all subsequent connections.
+#[cfg(feature = "tls")]
+struct CachedCerts {
+    ca_der: Vec<u8>,
+    #[cfg(feature = "mtls")]
+    client_cert_der: Vec<u8>,
+    #[cfg(feature = "mtls")]
+    client_key_der: Vec<u8>,
+}
+
+#[cfg(feature = "tls")]
+static CACHED_CERTS: StaticCell<CachedCerts> = StaticCell::new();
+#[cfg(feature = "tls")]
+static CERTS_PTR: AtomicPtr<CachedCerts> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Initialize and cache TLS certificates. Called once, results are reused.
+#[cfg(feature = "tls")]
+fn get_or_init_cached_certs() -> Result<&'static CachedCerts, Error> {
+    // Fast path: already initialized
+    let ptr = CERTS_PTR.load(Ordering::Acquire);
+    if !ptr.is_null() {
+        // SAFETY: ptr is only set to a valid pointer after CACHED_CERTS is initialized
+        return Ok(unsafe { &*ptr });
+    }
+
+    // First time - decode PEM certificates
+    let ca_chain = CONFIG.tls_ca.ok_or(Error::CACertificateMissing)?;
+    let ca_der = decode_pem(ca_chain)?;
+    log::info!("CA certificate decoded and cached: {} bytes", ca_der.len());
+
+    #[cfg(feature = "mtls")]
+    let client_cert_der = {
+        let tls_cert = CONFIG.tls_cert.ok_or(Error::ClientCertificateMissing)?;
+        let cert = decode_pem(tls_cert)?;
+        log::info!(
+            "Client certificate decoded and cached: {} bytes",
+            cert.len()
+        );
+        cert
+    };
+
+    #[cfg(feature = "mtls")]
+    let client_key_der = {
+        let tls_key = CONFIG.tls_key.ok_or(Error::ClientPrivateKeyMissing)?;
+        let key = decode_pem(tls_key)?;
+        // Validate the key can be parsed
+        match SecretKey::<p256::NistP256>::from_sec1_der(&key) {
+            Ok(_) => log::info!("Private key decoded and cached: {} bytes", key.len()),
+            Err(e) => log::error!("Failed to parse private key as SEC1 DER: {:?}", e),
+        }
+        key
+    };
+
+    let certs = CachedCerts {
+        ca_der,
+        #[cfg(feature = "mtls")]
+        client_cert_der,
+        #[cfg(feature = "mtls")]
+        client_key_der,
+    };
+
+    let cached: &'static mut CachedCerts = CACHED_CERTS.init(certs);
+    CERTS_PTR.store(cached as *mut CachedCerts, Ordering::Release);
+    Ok(cached)
+}
 
 #[derive(Debug)]
 pub enum Error {
@@ -47,7 +116,7 @@ where
 }
 
 #[cfg(feature = "tls")]
-impl<'a> Transport<'a, TlsConnection<'a, TcpSocket<'a>, Aes256GcmSha384>> {
+impl<'a> Transport<'a, TlsConnection<'a, TcpSocket<'a>, Aes128GcmSha256>> {
     pub async fn new<RNG>(
         stack: Stack<'static>,
         rng: &mut RNG,
@@ -79,53 +148,32 @@ impl<'a> Transport<'a, TlsConnection<'a, TcpSocket<'a>, Aes256GcmSha384>> {
             .map_err(Error::SocketConnectionError)?;
         log::info!("TCP connected");
 
-        let ca_chain = if let Some(ca_chain) = CONFIG.tls_ca {
-            ca_chain
-        } else {
-            return Err(Error::CACertificateMissing);
-        };
-
-        let ca_der = decode_pem(ca_chain)?;
-        let mut _client_cert_der = Vec::new();
-        let mut _client_key_der = Vec::new();
+        // Get cached certificates (decoded once, reused for all connections)
+        let certs = get_or_init_cached_certs()?;
 
         let mut config = TlsConfig::new().with_server_name(hostname);
-        config = config.with_ca(embedded_tls::Certificate::X509(&ca_der));
-        log::info!("CA certificate loaded: {} bytes", ca_der.len());
+        config = config.with_ca(embedded_tls::Certificate::X509(&certs.ca_der));
 
-        if cfg!(feature = "mtls") {
-             let tls_cert = if let Some(tls_cert) = CONFIG.tls_cert {
-                tls_cert
-             } else {
-                 return Err(Error::ClientCertificateMissing);
-             };
-
-             let tls_key = if let Some(tls_key) = CONFIG.tls_key {
-                tls_key
-             } else {
-                 return Err(Error::ClientPrivateKeyMissing);
-             };
-
-             _client_cert_der = decode_pem(tls_cert)?;
-             _client_key_der = decode_pem(tls_key)?;
-
-             // Test if the key can be parsed by p256
-             match SecretKey::<p256::NistP256>::from_sec1_der(&_client_key_der) {
-                 Ok(_) => log::info!("Private key successfully parsed as SEC1 DER"),
-                 Err(e) => log::error!("Failed to parse private key as SEC1 DER: {:?}", e),
-             }
-
-             config = config.with_cert(embedded_tls::Certificate::X509(&_client_cert_der));
-             config = config.with_priv_key(&_client_key_der);
-
-             log::info!("mTLS enabled: cert {} bytes, key {} bytes", _client_cert_der.len(), _client_key_der.len());
+        #[cfg(feature = "mtls")]
+        {
+            config = config.with_cert(embedded_tls::Certificate::X509(&certs.client_cert_der));
+            config = config.with_priv_key(&certs.client_key_der);
+            log::debug!(
+                "mTLS enabled: cert {} bytes, key {} bytes",
+                certs.client_cert_der.len(),
+                certs.client_key_der.len()
+            );
         }
 
-        let mut tls: TlsConnection<TcpSocket, Aes256GcmSha384> =
+        let mut tls: TlsConnection<TcpSocket, Aes128GcmSha256> =
             TlsConnection::new(socket, tls_read_buffer, tls_write_buffer);
 
-        log::info!("Starting TLS handshake with {} (TLS 1.3, AES-256-GCM-SHA384)", hostname);
-        let crypto_provider = UnsecureProvider::new::<Aes256GcmSha384>(rng);
+        log::info!(
+            "Starting TLS handshake with {} (TLS 1.3, AES-128-GCM-SHA256)",
+            hostname
+        );
+
+        let crypto_provider = UnsecureProvider::new::<Aes128GcmSha256>(rng);
         tls.open(TlsContext::new(&config, crypto_provider))
             .await
             .map_err(|e| {
@@ -143,6 +191,23 @@ impl<'a> Transport<'a, TlsConnection<'a, TcpSocket<'a>, Aes256GcmSha384>> {
             session: tls,
             _marker: PhantomData,
         })
+    }
+
+    /// Properly close the TLS connection and underlying TCP socket.
+    /// Sends TLS close_notify alert and closes the TCP socket.
+    pub async fn close(self) {
+        log::debug!("Closing TLS connection...");
+        match self.session.close().await {
+            Ok(mut socket) => {
+                log::debug!("TLS close_notify sent, closing TCP socket");
+                socket.close();
+            }
+            Err((mut socket, e)) => {
+                log::warn!("TLS close failed: {:?}, aborting socket", e);
+                socket.abort();
+            }
+        }
+        log::debug!("Transport closed");
     }
 }
 
@@ -196,6 +261,13 @@ impl<'a> Transport<'a, TcpSocket<'a>> {
             _marker: PhantomData,
         })
     }
+
+    /// Close the TCP socket.
+    pub async fn close(mut self) {
+        log::debug!("Closing TCP socket...");
+        self.session.close();
+        log::debug!("Transport closed");
+    }
 }
 
 impl<'a, S> ErrorType for Transport<'a, S>
@@ -211,17 +283,17 @@ where
     S::Error: core::fmt::Debug,
 {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, S::Error> {
-        log::info!("Transport read: buffer size {} bytes", buf.len());
+        log::trace!("Transport read: buffer size {} bytes", buf.len());
         for attempt in 0..MAX_RETRIES {
             match self.session.read(buf).await {
                 Ok(n) => {
-                    log::info!("Transport read success: {} bytes", n);
+                    log::trace!("Transport read success: {} bytes", n);
                     return Ok(n);
                 }
                 Err(e) => {
                     // Check if this is an EOF-related error that shouldn't be retried
                     if is_eof_error(&e) {
-                        log::info!("EOF encountered, not retrying: {:?}", e);
+                        log::debug!("EOF encountered, not retrying: {:?}", e);
                         return Err(e);
                     }
 
@@ -248,7 +320,7 @@ where
                     Err(e) => {
                         // Don't retry EOF errors
                         if is_eof_error(&e) {
-                            log::debug!("EOF encountered in read_exact: {:?}", e);
+                            log::trace!("EOF encountered in read_exact: {:?}", e);
                             return Err(ReadExactError::UnexpectedEof);
                         }
 
@@ -284,7 +356,7 @@ where
         for attempt in 0..MAX_RETRIES {
             match self.session.write(buf).await {
                 Ok(n) => {
-                    log::info!("Transport write success: {} bytes buffered", n);
+                    log::trace!("Transport write success: {} bytes buffered", n);
                     // Auto-flush after write - rust-mqtt doesn't call flush(),
                     // but embedded-tls buffers data until flush() is called.
                     // Without this, MQTT packets never get sent over the wire.
@@ -292,7 +364,7 @@ where
                         log::error!("Auto-flush after write failed: {:?}", e);
                         return Err(e);
                     }
-                    log::info!("Transport auto-flush success, data sent");
+                    log::trace!("Transport auto-flush success, data sent");
                     return Ok(n);
                 }
                 Err(e) => {
@@ -307,11 +379,11 @@ where
     }
 
     async fn flush(&mut self) -> Result<(), S::Error> {
-        log::info!("Transport flush called");
+        log::trace!("Transport flush called");
         for attempt in 0..MAX_RETRIES {
             match self.session.flush().await {
                 Ok(()) => {
-                    log::info!("Transport flush success");
+                    log::trace!("Transport flush success");
                     return Ok(());
                 }
                 Err(e) => {

@@ -26,3 +26,9 @@ pub const UART_AT_CMD: u8 = 0xAB;
 
 /// Interval in seconds between firmware update checks (3600 = 1 hour)
 pub const FIRMWARE_CHECK_INTERVAL: u64 = 3600;
+
+/// Watchdog timeout in seconds. Must be long enough to accommodate:
+/// - TLS 1.3 handshake (can take 10-20+ seconds on ESP32)
+/// - Sensor measurements (SCD30 data ready wait up to 30 seconds)
+/// - Network operations during poor connectivity
+pub const WATCHDOG_TIMEOUT_SECS: u64 = 60;

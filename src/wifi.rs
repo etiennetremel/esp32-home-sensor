@@ -15,7 +15,7 @@ use static_cell::StaticCell;
 
 use crate::config::CONFIG;
 
-static RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
+static RESOURCES: StaticCell<StackResources<5>> = StaticCell::new();
 
 pub struct Wifi {
     pub stack: Stack<'static>,
