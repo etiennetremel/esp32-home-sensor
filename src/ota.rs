@@ -108,7 +108,8 @@ impl<'a> Ota<'a> {
         // for memory)
         const INFO_REQ_PREFIX: &str = "\r\nGET /version?device=";
         const REQ_PREFIX: &str = " HTTP/1.1\r\nHost: ";
-        const REQ_SUFFIX: &str = "\r\nConnection: close\r\n\r\n";
+        const REQ_SUFFIX_KEEPALIVE: &str = "\r\nConnection: keep-alive\r\n\r\n";
+        const REQ_SUFFIX_CLOSE: &str = "\r\nConnection: close\r\n\r\n";
 
         // Write request in chunks to avoid dynamic allocation
         session
@@ -128,7 +129,7 @@ impl<'a> Ota<'a> {
             .await
             .map_err(|_| Error::Connection)?;
         session
-            .write_all(REQ_SUFFIX.as_bytes())
+            .write_all(REQ_SUFFIX_KEEPALIVE.as_bytes())
             .await
             .map_err(|_| Error::Connection)?;
 
@@ -197,6 +198,7 @@ impl<'a> Ota<'a> {
                     VERSION
                 );
             }
+            session.close().await;
             return Ok(());
         }
 
@@ -211,26 +213,7 @@ impl<'a> Ota<'a> {
             size
         );
 
-        // Drop session and create a new one for firmware download
-        drop(session);
-
-        let mut session = Transport::new(
-            *stack_guard,
-            &mut self.rng,
-            &mut *rx_buf,
-            &mut *tx_buf,
-            &mut *tls_read_buf,
-            &mut *tls_write_buf,
-            self.ota_hostname,
-            self.ota_port,
-        )
-        .await
-        .map_err(|e| {
-            log::error!("OTA firmware transport connection failed: {:?}", e);
-            Error::Connection
-        })?;
-
-        // Same approach for firmware request
+        // Reuse the same session for firmware download request
         const FIRMWARE_REQ_PREFIX: &str = "GET /firmware?device=";
 
         session
@@ -250,7 +233,7 @@ impl<'a> Ota<'a> {
             .await
             .map_err(|_| Error::Connection)?;
         session
-            .write_all(REQ_SUFFIX.as_bytes())
+            .write_all(REQ_SUFFIX_CLOSE.as_bytes())
             .await
             .map_err(|_| Error::Connection)?;
 
@@ -414,6 +397,9 @@ impl<'a> Ota<'a> {
                 }
             }
         }
+
+        // Done reading firmware, close the session
+        session.close().await;
 
         log::info!(
             "Firmware download complete: {} bytes written (expected {})",
