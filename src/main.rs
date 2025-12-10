@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 
+#[cfg(any(feature = "bme280", feature = "scd30"))]
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_executor::Spawner;
 use embassy_net::Stack;
@@ -11,15 +12,15 @@ use esp_alloc as _;
 use esp_backtrace as _;
 use esp_hal::{
     self as hal,
-    Async,
     clock::CpuClock,
-    i2c::master::{BusTimeout, I2c},
     ram,
     rng::Rng,
-    time::Rate,
     timer::timg::{MwdtStage, TimerGroup, Wdt},
-    uart::{RxConfig, Uart},
 };
+#[cfg(any(feature = "bme280", feature = "scd30"))]
+use esp_hal::{Async, i2c::master::{BusTimeout, I2c}, time::Rate};
+#[cfg(feature = "sds011")]
+use esp_hal::uart::{RxConfig, Uart};
 use esp_println::logger::init_logger;
 use esp_radio::Controller;
 
@@ -33,7 +34,7 @@ extern crate alloc;
 pub mod config;
 pub mod constants;
 pub mod cstr;
-mod firmware_update;
+mod ota;
 mod measurement;
 mod mqtt;
 pub mod sensors;
@@ -42,11 +43,12 @@ mod wifi;
 
 use config::CONFIG;
 use constants::*;
-use firmware_update::FirmwareUpdate;
+use ota::Ota;
 use measurement::Measurement;
 use sensors::Sensors;
 use wifi::Wifi;
 
+#[cfg(any(feature = "bme280", feature = "scd30"))]
 static I2C_BUS: StaticCell<Mutex<NoopRawMutex, I2c<'static, Async>>> = StaticCell::new();
 static STACK: StaticCell<Mutex<NoopRawMutex, Stack<'static>>> = StaticCell::new();
 
@@ -84,7 +86,10 @@ async fn main(spawner: Spawner) {
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     let mut wdt0 = timg0.wdt;
     wdt0.enable();
-    wdt0.set_timeout(MwdtStage::Stage0, hal::time::Duration::from_secs(10));
+    // Set watchdog timeout to accommodate TLS handshakes and sensor operations.
+    // TLS 1.3 handshake on ESP32 can take 10-20+ seconds, and sensor measurements may also
+    // require significant time (e.g., SCD30 data ready wait).
+    wdt0.set_timeout(MwdtStage::Stage0, hal::time::Duration::from_secs(WATCHDOG_TIMEOUT_SECS));
 
     esp_rtos::start(timg0.timer0);
 
@@ -92,9 +97,14 @@ async fn main(spawner: Spawner) {
     // https://github.com/esp-rs/esp-hal/issues/1626
     Timer::after(Duration::from_millis(1000)).await;
 
+    #[cfg_attr(
+        not(any(feature = "bme280", feature = "scd30", feature = "sds011")),
+        allow(unused_mut)
+    )]
     let mut sensors = Sensors::new();
 
-    if cfg!(feature = "bme280") || cfg!(feature = "scd30") {
+    #[cfg(any(feature = "bme280", feature = "scd30"))]
+    {
         let (sda, scl) = (peripherals.GPIO21, peripherals.GPIO22);
 
         let i2c_config = hal::i2c::master::Config::default()
@@ -110,19 +120,21 @@ async fn main(spawner: Spawner) {
         let i2c_bus = Mutex::new(i2c);
         let i2c_bus = I2C_BUS.init(i2c_bus);
 
-        if cfg!(feature = "bme280") && (sensors.new_bme280(I2cDevice::new(i2c_bus)).await).is_err()
-        {
+        #[cfg(feature = "bme280")]
+        if (sensors.new_bme280(I2cDevice::new(i2c_bus)).await).is_err() {
             log::error!("Failed initializing BME280. Rebooting...");
             esp_hal::system::software_reset();
         }
 
-        if cfg!(feature = "scd30") && (sensors.new_scd30(I2cDevice::new(i2c_bus)).await).is_err() {
+        #[cfg(feature = "scd30")]
+        if (sensors.new_scd30(I2cDevice::new(i2c_bus)).await).is_err() {
             log::error!("Failed initializing SCD30. Rebooting...");
             esp_hal::system::software_reset();
         }
     }
 
-    if cfg!(feature = "sds011") {
+    #[cfg(feature = "sds011")]
+    {
         let (tx, rx) = (peripherals.GPIO17, peripherals.GPIO16);
 
         let uart_config = hal::uart::Config::default()
@@ -189,7 +201,7 @@ async fn main(spawner: Spawner) {
     let tls_read_buf = TLS_READ_BUF.init(Mutex::new([0; TLS_BUFFER_MAX]));
     let tls_write_buf = TLS_WRITE_BUF.init(Mutex::new([0; TLS_BUFFER_MAX]));
 
-    let firmware_update = FirmwareUpdate::new(
+    let ota = Ota::new(
         stack_shared,
         chacha_rng.clone(),
         rx_buf,
@@ -211,30 +223,30 @@ async fn main(spawner: Spawner) {
     .unwrap();
 
     spawner
-        .spawn(main_task(firmware_update, measurement, wdt0))
+        .spawn(main_task(ota, measurement, wdt0))
         .ok();
 }
 
 #[embassy_executor::task]
 async fn main_task(
-    mut firmware_update: FirmwareUpdate<'static>,
+    #[cfg_attr(not(feature = "ota"), allow(unused))] mut ota: Ota<'static>,
     mut measurement: Measurement,
     mut wdt: Wdt<esp_hal::peripherals::TIMG0<'static>>,
 ) {
     // check for firmware update at boot time
-    let mut update_counter = FIRMWARE_CHECK_INTERVAL / CONFIG.measurement_interval_seconds as u64;
+    #[cfg(feature = "ota")]
+    let mut update_counter: u64 =
+        FIRMWARE_CHECK_INTERVAL / CONFIG.measurement_interval_seconds as u64;
 
     loop {
         // Feed watchdog at start of loop
         wdt.feed();
 
         // Only check for firmware updates periodically
-        if cfg!(feature = "ota")
-            && update_counter
-                >= FIRMWARE_CHECK_INTERVAL / CONFIG.measurement_interval_seconds as u64
-        {
+        #[cfg(feature = "ota")]
+        if update_counter >= FIRMWARE_CHECK_INTERVAL / CONFIG.measurement_interval_seconds as u64 {
             update_counter = 0;
-            if let Err(e) = firmware_update.check().await {
+            if let Err(e) = ota.check().await {
                 log::error!("Firmware update error: {:?}", e);
                 // Smart sleep that feeds watchdog
                 for _ in 0..CONFIG.measurement_interval_seconds {
@@ -253,7 +265,8 @@ async fn main_task(
             log::error!("Measurement error: {:?}", e);
         }
 
-        if cfg!(feature = "ota") {
+        #[cfg(feature = "ota")]
+        {
             update_counter += 1;
         }
 
