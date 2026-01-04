@@ -264,8 +264,8 @@ impl<'a> Ota<'a> {
 
         let body_start = body_start.ok_or(Error::Firmware)?;
 
-        // Initialize OTA using the static table buffer
-        // SAFETY: OTA_TABLE_PTR was set in `new()` and OTA operations are serialized
+        // SAFETY: OTA_TABLE_PTR is set once in `new()` via OTA_TABLE_BUFFER.init() which returns
+        // a 'static reference. OTA operations are serialized through `&mut self`.
         let table_buffer = unsafe { &mut *OTA_TABLE_PTR.load(Ordering::Acquire) };
         let mut ota =
             OtaUpdater::new(&mut self.flash, table_buffer).map_err(|_| Error::Ota)?;
@@ -276,7 +276,7 @@ impl<'a> Ota<'a> {
         // Flash erase is blocking and can take several seconds for large partitions
         let erase_len = (size + 4095) & !4095;
         log::info!("Erasing OTA partition ({} bytes)...", erase_len);
-
+        
         const ERASE_CHUNK_SIZE: u32 = 65536; // 64KB chunks
         let mut erased: u32 = 0;
         while erased < erase_len as u32 {
@@ -288,6 +288,7 @@ impl<'a> Ota<'a> {
                     Error::Ota
                 })?;
             erased += chunk;
+            
             // Yield to let the watchdog and WiFi tasks run
             Timer::after(embassy_time::Duration::from_millis(10)).await;
             if erased % (256 * 1024) == 0 {

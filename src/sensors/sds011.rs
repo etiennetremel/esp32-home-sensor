@@ -28,8 +28,7 @@ impl<S: Read + Write> Sds011<S> {
         sensor
             .init()
             .await
-            .map_err(|_| SensorError::InitFailure)
-            .ok();
+            .map_err(|_| SensorError::InitFailure)?;
 
         info!("Initialised SDS011");
 

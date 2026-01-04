@@ -33,7 +33,6 @@ extern crate alloc;
 
 pub mod config;
 pub mod constants;
-pub mod cstr;
 mod ota;
 mod measurement;
 mod mqtt;
@@ -162,18 +161,24 @@ async fn main(spawner: Spawner) {
 
     let esp_radio_ctrl = &*mk_static!(Controller<'static>, esp_radio::init().unwrap());
 
-    let wifi = Wifi::new(
+    let wifi = match Wifi::new(
         esp_radio_ctrl,
         peripherals.WIFI,
         rng,
         spawner,
     )
     .await
-    .unwrap();
+    {
+        Ok(wifi) => wifi,
+        Err(e) => {
+            log::error!("WiFi initialization failed: {:?}. Rebooting...", e);
+            esp_hal::system::software_reset();
+        }
+    };
 
     // Try to connect to WiFi with a timeout. If it fails, reboot.
     // This prevents the device from hanging indefinitely at boot if WiFi is flaky.
-    match embassy_time::with_timeout(Duration::from_secs(20), wifi.connect()).await {
+    match embassy_time::with_timeout(Duration::from_secs(WIFI_INITIAL_CONNECT_TIMEOUT_SECS), wifi.connect()).await {
         Ok(Ok(_)) => log::info!("Initial WiFi connection successful"),
         Ok(Err(e)) => {
             log::error!("Initial WiFi connection failed: {:?}. Rebooting...", e);
@@ -224,7 +229,7 @@ async fn main(spawner: Spawner) {
 
     spawner
         .spawn(main_task(ota, measurement, wdt0))
-        .ok();
+        .expect("Failed to spawn main task");
 }
 
 #[embassy_executor::task]
@@ -248,6 +253,19 @@ async fn main_task(
             update_counter = 0;
             if let Err(e) = ota.check().await {
                 log::error!("Firmware update error: {:?}", e);
+                // If OTA failed due to network issues, reboot to recover network stack
+                // This handles cases where WiFi disconnected during long OTA operations
+                match e {
+                    ota::Error::Connection | ota::Error::Firmware => {
+                        log::error!("OTA failed due to network issues, rebooting to recover...");
+                        Timer::after(Duration::from_millis(1000)).await;
+                        esp_hal::system::software_reset();
+                    }
+                    _ => {
+                        // For other OTA errors (config, info), just skip this cycle
+                        log::info!("OTA failed due to non-network issues, continuing...");
+                    }
+                }
                 // Smart sleep that feeds watchdog
                 for _ in 0..CONFIG.measurement_interval_seconds {
                     Timer::after(Duration::from_secs(1)).await;
@@ -263,6 +281,19 @@ async fn main_task(
         // Take measurements each cycle
         if let Err(e) = measurement.take().await {
             log::error!("Measurement error: {:?}", e);
+            // If measurement failed due to transport/network issues, reboot to recover
+            // This handles cases where WiFi disconnected between OTA and measurement
+            match e {
+                measurement::Error::Transport => {
+                    log::error!("Measurement failed due to transport issues, rebooting to recover...");
+                    Timer::after(Duration::from_millis(1000)).await;
+                    esp_hal::system::software_reset();
+                }
+                _ => {
+                    // For sensor or format errors, just continue to next cycle
+                    log::info!("Measurement failed due to non-transport issues, continuing...");
+                }
+            }
         }
 
         #[cfg(feature = "ota")]

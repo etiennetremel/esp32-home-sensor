@@ -32,3 +32,19 @@ pub const FIRMWARE_CHECK_INTERVAL: u64 = 3600;
 /// - Sensor measurements (SCD30 data ready wait up to 30 seconds)
 /// - Network operations during poor connectivity
 pub const WATCHDOG_TIMEOUT_SECS: u64 = 60;
+
+/// Timeout for WiFi connection attempts during reconnection
+pub const WIFI_CONNECT_TIMEOUT_SECS: u64 = 10;
+
+/// Delay between WiFi reconnection attempts
+pub const WIFI_RECONNECT_DELAY_MS: u64 = 5000;
+
+/// Timeout for initial WiFi connection at boot (longer than reconnect to allow
+/// for slower network initialization)
+pub const WIFI_INITIAL_CONNECT_TIMEOUT_SECS: u64 = 20;
+
+/// TCP socket timeout for network operations (reads/writes)
+pub const TCP_SOCKET_TIMEOUT_SECS: u64 = 30;
+
+/// Delay after MQTT disconnect to allow socket cleanup before next connection
+pub const MQTT_DISCONNECT_CLEANUP_DELAY_MS: u64 = 100;
