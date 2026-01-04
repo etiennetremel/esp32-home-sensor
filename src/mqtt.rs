@@ -27,6 +27,7 @@ impl<'a, T: Read + Write> Mqtt<'a, T> {
             rust_mqtt::client::client_config::MqttVersion::MQTTv5,
             CountingRng(20000),
         );
+        config.add_client_id(CONFIG.device_id);
         config.add_username(CONFIG.mqtt_username);
         config.add_password(CONFIG.mqtt_password);
 

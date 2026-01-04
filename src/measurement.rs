@@ -111,7 +111,7 @@ impl Measurement {
         // Allow network stack time to process socket cleanup.
         // Without this, rapid reconnections can exhaust sockets before
         // the previous connection is fully closed.
-        Timer::after(Duration::from_millis(100)).await;
+        Timer::after(Duration::from_millis(MQTT_DISCONNECT_CLEANUP_DELAY_MS)).await;
 
         log::info!("MQTT data published successfully");
         Ok(())

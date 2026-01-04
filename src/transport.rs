@@ -18,6 +18,7 @@ use rand_core::{CryptoRng, RngCore};
 use static_cell::StaticCell;
 
 use crate::config::CONFIG;
+use crate::constants::TCP_SOCKET_TIMEOUT_SECS;
 
 const MAX_RETRIES: usize = 3;
 
@@ -40,10 +41,10 @@ static CERTS_PTR: AtomicPtr<CachedCerts> = AtomicPtr::new(core::ptr::null_mut())
 /// Initialize and cache TLS certificates. Called once, results are reused.
 #[cfg(feature = "tls")]
 fn get_or_init_cached_certs() -> Result<&'static CachedCerts, Error> {
-    // Fast path: already initialized
     let ptr = CERTS_PTR.load(Ordering::Acquire);
     if !ptr.is_null() {
-        // SAFETY: ptr is only set to a valid pointer after CACHED_CERTS is initialized
+        // SAFETY: CERTS_PTR is only set via CACHED_CERTS.init() which returns a 'static reference.
+        // The pointer is never modified after initialization (write-once pattern).
         return Ok(unsafe { &*ptr });
     }
 
@@ -93,15 +94,9 @@ pub enum Error {
     CACertificateMissing,
     ClientCertificateMissing,
     ClientPrivateKeyMissing,
-    #[allow(dead_code)]
     DNSQueryFailed(DNSError),
     DNSLookupFailed,
-    HostnameCstrConversionError,
-    #[allow(dead_code)]
     SocketConnectionError(ConnectError),
-    #[allow(dead_code)]
-    TLSSessionFailed,
-    #[allow(dead_code)]
     TLSHandshakeFailed,
     PEMParseError,
 }
@@ -131,7 +126,7 @@ impl<'a> Transport<'a, TlsConnection<'a, TcpSocket<'a>, Aes128GcmSha256>> {
         RNG: CryptoRng + RngCore,
     {
         let mut socket = TcpSocket::new(stack, rx_buffer, tx_buffer);
-        socket.set_timeout(Some(Duration::from_secs(30)));
+        socket.set_timeout(Some(Duration::from_secs(TCP_SOCKET_TIMEOUT_SECS)));
 
         let addr = stack
             .dns_query(hostname, DnsQueryType::A)
@@ -242,12 +237,12 @@ impl<'a> Transport<'a, TcpSocket<'a>> {
         port: u16,
     ) -> Result<Self, Error> {
         let mut socket = TcpSocket::new(stack, rx_buffer, tx_buffer);
-        socket.set_timeout(Some(Duration::from_secs(300)));
+        socket.set_timeout(Some(Duration::from_secs(TCP_SOCKET_TIMEOUT_SECS)));
 
         let addr = stack
             .dns_query(hostname, DnsQueryType::A)
             .await
-            .map_err(|_| Error::DNSLookupFailed)?
+            .map_err(Error::DNSQueryFailed)?
             .first()
             .copied()
             .ok_or(Error::DNSLookupFailed)?;
@@ -345,6 +340,7 @@ fn is_eof_error<E: core::fmt::Debug>(error: &E) -> bool {
         || error_str.contains("UnexpectedEof")
         || error_str.contains("ConnectionClosed")
         || error_str.contains("BrokenPipe")
+        || error_str.contains("ConnectionReset")
 }
 
 impl<'a, S> Write for Transport<'a, S>
@@ -401,13 +397,9 @@ where
         while !buf.is_empty() {
             match self.write(buf).await {
                 Ok(0) => {
-                    log::error!("write_all: zero bytes written, likely connection closed");
-                    return Err(self
-                        .session
-                        .write(&[])
-                        .await
-                        .err()
-                        .unwrap_or_else(|| panic!("write_all failed, and no error available")));
+                    log::error!("write_all: zero bytes written, connection likely closed");
+                    // Try one more write to get the actual error from the underlying transport
+                    return self.session.write(&[]).await.map(|_| ());
                 }
                 Ok(n) => {
                     buf = &buf[n..];

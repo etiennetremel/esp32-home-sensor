@@ -28,7 +28,9 @@ pub struct SensorData {
 
 impl SensorData {
     pub fn add_measurement(&mut self, key: &'static str, value: f32) {
-        self.data.insert(key, value).ok();
+        if self.data.insert(key, value).is_err() {
+            log::warn!("SensorData map full, dropping measurement: {}", key);
+        }
     }
 }
 

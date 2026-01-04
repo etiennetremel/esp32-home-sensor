@@ -14,6 +14,7 @@ use log::info;
 use static_cell::StaticCell;
 
 use crate::config::CONFIG;
+use crate::constants::{WIFI_CONNECT_TIMEOUT_SECS, WIFI_RECONNECT_DELAY_MS};
 
 static RESOURCES: StaticCell<StackResources<5>> = StaticCell::new();
 
@@ -22,7 +23,10 @@ pub struct Wifi {
 }
 
 #[derive(Debug)]
-pub enum Error {}
+pub enum Error {
+    WifiInitFailed,
+    HostnameTooLong,
+}
 
 impl Wifi {
     pub async fn new(
@@ -31,10 +35,13 @@ impl Wifi {
         rng: Rng,
         spawner: Spawner,
     ) -> Result<Self, Error> {
-        let (controller, interfaces) = esp_radio::wifi::new(init, wifi, Config::default()).unwrap();
+        let (controller, interfaces) = esp_radio::wifi::new(init, wifi, Config::default())
+            .map_err(|_| Error::WifiInitFailed)?;
 
         let mut dhcp_config = embassy_net::DhcpConfig::default();
-        dhcp_config.hostname = Some(String::<32>::from_str(CONFIG.device_id).unwrap());
+        dhcp_config.hostname = Some(
+            String::<32>::from_str(CONFIG.device_id).map_err(|_| Error::HostnameTooLong)?,
+        );
 
         let seed = (rng.random() as u64) << 32 | rng.random() as u64;
         let config = embassy_net::Config::dhcpv4(dhcp_config);
@@ -42,8 +49,8 @@ impl Wifi {
         let resources = RESOURCES.init(StackResources::new());
         let (stack, runner) = embassy_net::new(interfaces.sta, config, resources, seed);
 
-        spawner.spawn(connection(controller)).ok();
-        spawner.spawn(net_task(runner)).ok();
+        spawner.spawn(connection(controller)).expect("Failed to spawn WiFi connection task");
+        spawner.spawn(net_task(runner)).expect("Failed to spawn network task");
 
         Ok(Self { stack })
     }
@@ -80,7 +87,7 @@ async fn connection(mut controller: WifiController<'static>) {
         if esp_radio::wifi::sta_state() == WifiStaState::Connected {
             // wait until we're no longer connected
             controller.wait_for_event(WifiEvent::StaDisconnected).await;
-            Timer::after(Duration::from_millis(5000)).await
+            Timer::after(Duration::from_millis(WIFI_RECONNECT_DELAY_MS)).await
         }
 
         if !matches!(controller.is_started(), Ok(true)) {
@@ -89,22 +96,30 @@ async fn connection(mut controller: WifiController<'static>) {
                 .with_ssid(CONFIG.wifi_ssid.into())
                 .with_password(CONFIG.wifi_psk.into());
             let config = ModeConfig::Client(client_config);
-            controller.set_config(&config).unwrap();
+            if let Err(e) = controller.set_config(&config) {
+                log::error!("Failed to set WiFi config: {:?}. Retrying...", e);
+                Timer::after(Duration::from_millis(WIFI_RECONNECT_DELAY_MS)).await;
+                continue;
+            }
             info!("Starting wifi");
-            controller.start_async().await.unwrap();
+            if let Err(e) = controller.start_async().await {
+                log::error!("Failed to start WiFi: {:?}. Retrying...", e);
+                Timer::after(Duration::from_millis(WIFI_RECONNECT_DELAY_MS)).await;
+                continue;
+            }
             info!("Wifi started!");
         }
 
         info!("About to connect to {:?}...", CONFIG.wifi_ssid);
-        match with_timeout(Duration::from_secs(10), controller.connect_async()).await {
+        match with_timeout(Duration::from_secs(WIFI_CONNECT_TIMEOUT_SECS), controller.connect_async()).await {
             Ok(Ok(_)) => info!("Wifi connected!"),
             Ok(Err(e)) => {
                 info!("Failed to connect to wifi: {e:?}");
-                Timer::after(Duration::from_millis(5000)).await
+                Timer::after(Duration::from_millis(WIFI_RECONNECT_DELAY_MS)).await
             }
             Err(_) => {
                 info!("Wifi connection timed out");
-                Timer::after(Duration::from_millis(5000)).await
+                Timer::after(Duration::from_millis(WIFI_RECONNECT_DELAY_MS)).await
             }
         }
     }

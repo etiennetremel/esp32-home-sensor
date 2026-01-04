@@ -33,7 +33,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let out_dir = env::var("OUT_DIR")?;
     let dest_path = Path::new(&out_dir).join("config.rs");
     let code = format!(
-        r#"
+        r"
         pub const CONFIG: Config = Config {{
             device_id: {id:?},
             location: {loc:?},
@@ -51,7 +51,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             wifi_psk: {psk:?},
             wifi_ssid: {ssid:?},
         }};
-    "#,
+    ",
         ca = raw.tls_ca,
         cert = raw.tls_cert,
         id = raw.device_id,
@@ -70,7 +70,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
 
     let out_dir = env::var("OUT_DIR")?;
-    println!("cargo:warning=OUT_DIR={}", out_dir);
+    println!("cargo:warning=OUT_DIR={out_dir}");
 
     fs::write(dest_path, code)?;
     Ok(())
