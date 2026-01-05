@@ -1,11 +1,17 @@
 use embedded_io_async::{Read, Write};
 use rust_mqtt::{
-    client::{client::MqttClient, client_config::ClientConfig},
-    packet::v5::publish_packet::QualityOfService,
-    utils::rng_generator::CountingRng,
+    buffer::AllocBuffer,
+    client::{
+        options::{ConnectOptions, DisconnectOptions, PublicationOptions},
+        Client,
+    },
+    config::KeepAlive,
+    types::{MqttBinary, MqttString, QoS, TopicName},
+    Bytes,
 };
 
 use crate::config::CONFIG;
+use crate::constants::{MQTT_MAX_SUBSCRIBES, MQTT_RECEIVE_MAXIMUM, MQTT_SEND_MAXIMUM};
 
 #[derive(Debug)]
 pub enum Error {
@@ -13,28 +19,41 @@ pub enum Error {
     PublishMessageFailed,
 }
 
-pub struct Mqtt<'a, T: Read + Write> {
-    client: MqttClient<'a, T, 5, CountingRng>,
+pub struct Mqtt<'a, T>
+where
+    T: Read + Write,
+{
+    client: Client<'a, T, AllocBuffer, MQTT_MAX_SUBSCRIBES, MQTT_RECEIVE_MAXIMUM, MQTT_SEND_MAXIMUM>,
 }
 
-impl<'a, T: Read + Write> Mqtt<'a, T> {
-    pub async fn new(
-        transport: T,
-        tx_buffer: &'a mut [u8],
-        rx_buffer: &'a mut [u8],
-    ) -> Result<Self, Error> {
-        let mut config: ClientConfig<5, CountingRng> = ClientConfig::new(
-            rust_mqtt::client::client_config::MqttVersion::MQTTv5,
-            CountingRng(20000),
-        );
-        config.add_client_id(CONFIG.device_id);
-        config.add_username(CONFIG.mqtt_username);
-        config.add_password(CONFIG.mqtt_password);
-
+impl<'a, T> Mqtt<'a, T>
+where
+    T: Read + Write,
+{
+    pub async fn new(transport: T, buffer: &'a mut AllocBuffer) -> Result<Self, Error> {
         let mut client =
-            MqttClient::<T, 5, CountingRng>::new(transport, tx_buffer, 256, rx_buffer, 256, config);
+            Client::<'_, T, AllocBuffer, MQTT_MAX_SUBSCRIBES, MQTT_RECEIVE_MAXIMUM, MQTT_SEND_MAXIMUM>::new(buffer);
 
-        match client.connect_to_broker().await {
+        let connect_options = ConnectOptions {
+            clean_start: true,
+            keep_alive: KeepAlive::Seconds(30),
+            session_expiry_interval: Default::default(),
+            user_name: Some(
+                MqttString::try_from(CONFIG.mqtt_username).map_err(|_| Error::ConnectionFailed)?,
+            ),
+            password: Some(
+                MqttBinary::try_from(CONFIG.mqtt_password).map_err(|_| Error::ConnectionFailed)?,
+            ),
+            will: None,
+        };
+
+        let client_id =
+            MqttString::try_from(CONFIG.device_id).map_err(|_| Error::ConnectionFailed)?;
+
+        match client
+            .connect(transport, &connect_options, Some(client_id))
+            .await
+        {
             Ok(_) => {
                 log::info!("MQTT connected to broker successfully");
             }
@@ -48,19 +67,45 @@ impl<'a, T: Read + Write> Mqtt<'a, T> {
     }
 
     pub async fn send_message(&mut self, topic: &str, message: &[u8]) -> Result<(), Error> {
-        if (self
+        let topic_str = MqttString::try_from(topic).map_err(|_| Error::PublishMessageFailed)?;
+        // SAFETY: Topic names from config are valid (no wildcards)
+        let topic_name = unsafe { TopicName::new_unchecked(topic_str) };
+
+        let pub_options = PublicationOptions {
+            retain: false,
+            topic: topic_name,
+            qos: QoS::AtLeastOnce,
+        };
+
+        match self
             .client
-            .send_message(topic, message, QualityOfService::QoS1, false)
-            .await)
-            .is_err()
+            .publish(&pub_options, Bytes::from(message))
+            .await
         {
-            return Err(Error::PublishMessageFailed);
+            Ok(_) => {
+                match self.client.poll().await {
+                    Ok(_) => {
+                        log::debug!("Message published and acknowledged");
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to receive publish acknowledgment: {:?}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                log::error!("Failed to publish message: {:?}", e);
+                return Err(Error::PublishMessageFailed);
+            }
         }
 
         Ok(())
     }
 
     pub async fn disconnect(mut self) {
-        let _ = self.client.disconnect().await;
+        let disconnect_options = DisconnectOptions {
+            publish_will: false,
+            session_expiry_interval: None,
+        };
+        let _ = self.client.disconnect(&disconnect_options).await;
     }
 }

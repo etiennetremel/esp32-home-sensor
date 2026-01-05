@@ -8,7 +8,6 @@ use esp_radio::{
     Controller,
 };
 
-use core::str::FromStr;
 use heapless::String;
 use log::info;
 use static_cell::StaticCell;
@@ -40,7 +39,7 @@ impl Wifi {
 
         let mut dhcp_config = embassy_net::DhcpConfig::default();
         dhcp_config.hostname = Some(
-            String::<32>::from_str(CONFIG.device_id).map_err(|_| Error::HostnameTooLong)?,
+            String::<32>::try_from(CONFIG.device_id).map_err(|_| Error::HostnameTooLong)?,
         );
 
         let seed = (rng.random() as u64) << 32 | rng.random() as u64;

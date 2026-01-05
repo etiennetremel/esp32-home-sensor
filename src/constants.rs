@@ -11,11 +11,6 @@ pub const TX_BUFFER_SIZE: usize = 3072;
 /// (16384 bytes for TLS record + 256 bytes overhead)
 pub const TLS_BUFFER_MAX: usize = 16640;
 
-/// Size of the MQTT client receive buffer for application data
-pub const MQTT_RX_BUFFER_SIZE: usize = 1024;
-/// Size of the MQTT client transmit buffer for application data
-pub const MQTT_TX_BUFFER_SIZE: usize = 1024;
-
 /// Buffer size for OTA firmware update chunks
 pub const OTA_CHUNK_BUFFER_SIZE: usize = 2048;
 
@@ -48,3 +43,10 @@ pub const TCP_SOCKET_TIMEOUT_SECS: u64 = 30;
 
 /// Delay after MQTT disconnect to allow socket cleanup before next connection
 pub const MQTT_DISCONNECT_CLEANUP_DELAY_MS: u64 = 100;
+
+/// Maximum number of MQTT topic subscriptions the client can manage
+pub const MQTT_MAX_SUBSCRIBES: usize = 5;
+/// Maximum number of QoS 1/2 messages the client can receive concurrently
+pub const MQTT_RECEIVE_MAXIMUM: usize = 1;
+/// Maximum number of QoS 1/2 messages the client can send concurrently
+pub const MQTT_SEND_MAXIMUM: usize = 1;
