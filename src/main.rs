@@ -33,9 +33,10 @@ extern crate alloc;
 
 pub mod config;
 pub mod constants;
-mod ota;
 mod measurement;
 mod mqtt;
+mod ota;
+mod semver;
 pub mod sensors;
 pub mod transport;
 mod wifi;

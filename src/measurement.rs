@@ -3,6 +3,7 @@ use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embassy_time::{Duration, Timer};
 use heapless::String;
 use rand_chacha::ChaCha20Rng;
+use rust_mqtt::buffer::AllocBuffer;
 use static_cell::StaticCell;
 
 use crate::config::CONFIG;
@@ -11,8 +12,7 @@ use crate::mqtt::Mqtt;
 use crate::sensors::{SensorData, Sensors};
 use crate::transport::Transport;
 
-static MQTT_RX_BUF: StaticCell<Mutex<NoopRawMutex, [u8; MQTT_RX_BUFFER_SIZE]>> = StaticCell::new();
-static MQTT_TX_BUF: StaticCell<Mutex<NoopRawMutex, [u8; MQTT_TX_BUFFER_SIZE]>> = StaticCell::new();
+static MQTT_BUFFER: StaticCell<Mutex<NoopRawMutex, AllocBuffer>> = StaticCell::new();
 
 #[derive(Debug)]
 pub enum Error {
@@ -29,8 +29,7 @@ pub struct Measurement {
     tx_buf: &'static Mutex<NoopRawMutex, [u8; TX_BUFFER_SIZE]>,
     tls_read_buf: &'static Mutex<NoopRawMutex, [u8; TLS_BUFFER_MAX]>,
     tls_write_buf: &'static Mutex<NoopRawMutex, [u8; TLS_BUFFER_MAX]>,
-    mqtt_rx_buf: &'static Mutex<NoopRawMutex, [u8; MQTT_RX_BUFFER_SIZE]>,
-    mqtt_tx_buf: &'static Mutex<NoopRawMutex, [u8; MQTT_TX_BUFFER_SIZE]>,
+    mqtt_buffer: &'static Mutex<NoopRawMutex, AllocBuffer>,
     sensors: Sensors,
 }
 
@@ -44,8 +43,7 @@ impl Measurement {
         tls_write_buf: &'static Mutex<NoopRawMutex, [u8; TLS_BUFFER_MAX]>,
         sensors: Sensors,
     ) -> Result<Self, Error> {
-        let mqtt_rx_buf = MQTT_RX_BUF.init(Mutex::new([0; MQTT_RX_BUFFER_SIZE]));
-        let mqtt_tx_buf = MQTT_TX_BUF.init(Mutex::new([0; MQTT_TX_BUFFER_SIZE]));
+        let mqtt_buffer = MQTT_BUFFER.init(Mutex::new(AllocBuffer));
 
         Ok(Self {
             stack,
@@ -54,8 +52,7 @@ impl Measurement {
             tx_buf,
             tls_read_buf,
             tls_write_buf,
-            mqtt_rx_buf,
-            mqtt_tx_buf,
+            mqtt_buffer,
             sensors,
         })
     }
@@ -94,9 +91,8 @@ impl Measurement {
         })?;
 
         // Create MQTT client
-        let mut mqtt_rx_buf = self.mqtt_rx_buf.lock().await;
-        let mut mqtt_tx_buf = self.mqtt_tx_buf.lock().await;
-        let mut mqtt = Mqtt::new(transport, &mut *mqtt_tx_buf, &mut *mqtt_rx_buf)
+        let mut mqtt_buffer = self.mqtt_buffer.lock().await;
+        let mut mqtt = Mqtt::new(transport, &mut *mqtt_buffer)
             .await
             .map_err(|_| Error::Mqtt)?;
 
